@@ -27,7 +27,7 @@
 import { safeSend } from "./ws.js";
 import { getSettings } from "./settings.js";
 import { sharedState } from "./state.js";
-import { classifyImageSrc, fetchLocalImageAsBase64 } from "./image-relay.js";
+import { resolveImagePayload } from "./image-relay.js";
 
 // ---------------------------------------------------------------------------
 // Expression cache
@@ -109,14 +109,7 @@ async function buildExpressionImagePayload(imgEl) {
   if (!imgEl) return null;
   const src = imgEl.getAttribute("src");
   if (!src) return null;
-
-  const kind = classifyImageSrc(src);
-  if (!kind) return null;
-  if (kind === "local") {
-    const fetched = await fetchLocalImageAsBase64(src);
-    return fetched ? { type: "inline", ...fetched } : null;
-  }
-  return { type: "url", url: src };
+  return resolveImagePayload(src);
 }
 
 // ---------------------------------------------------------------------------

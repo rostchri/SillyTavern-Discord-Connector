@@ -141,6 +141,27 @@ export async function fetchLocalImageAsBase64(src) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared image payload resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves a single image src into a bridge-ready payload.
+ * Local images are fetched as inline base64; external URLs are passed through.
+ *
+ * @param {string} src
+ * @returns {Promise<{type: 'inline', data: string, mimeType: string, filename: string}|{type: 'url', url: string}|null>}
+ */
+export async function resolveImagePayload(src) {
+  const kind = classifyImageSrc(src);
+  if (!kind) return null;
+  if (kind === "local") {
+    const fetched = await fetchLocalImageAsBase64(src);
+    return fetched ? { type: "inline", ...fetched } : null;
+  }
+  return { type: "url", url: src };
+}
+
+// ---------------------------------------------------------------------------
 // DOM helpers
 // ---------------------------------------------------------------------------
 
@@ -185,17 +206,7 @@ export function extractTextFromMesText(mesTextEl) {
  * @returns {Promise<Array>}
  */
 async function collectImages(srcs) {
-  const results = await Promise.all(
-    srcs.map(async (src) => {
-      const kind = classifyImageSrc(src);
-      if (!kind) return null;
-      if (kind === "local") {
-        const fetched = await fetchLocalImageAsBase64(src);
-        return fetched ? { type: "inline", ...fetched } : null;
-      }
-      return { type: "url", url: src };
-    }),
-  );
+  const results = await Promise.all(srcs.map(resolveImagePayload));
   return results.filter(Boolean);
 }
 

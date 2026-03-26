@@ -15,32 +15,6 @@ import { fetchLocalImageAsBase64 } from "./image-relay.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Fetches the avatar for a character as base64, or returns null on failure.
- *
- * @param {object} character - ST character object with an .avatar property
- * @returns {Promise<string|null>} base64-encoded avatar data, or null
- */
-async function fetchAvatarBase64(character) {
-  if (!character?.avatar) return null;
-  const src = `/characters/${encodeURIComponent(character.avatar)}`;
-  const result = await fetchLocalImageAsBase64(src);
-  return result ? result.data : null;
-}
-
-/**
- * Fetches a user avatar (persona) as base64.
- *
- * @param {string} avatarFile - filename of the user avatar
- * @returns {Promise<string|null>}
- */
-async function fetchUserAvatarBase64(avatarFile) {
-  if (!avatarFile) return null;
-  const src = `/User Avatars/${encodeURIComponent(avatarFile)}`;
-  const result = await fetchLocalImageAsBase64(src);
-  return result ? result.data : null;
-}
-
-/**
  * Collects the full character inventory from SillyTavern's context.
  * Returns bots (AI characters), personas (user identities), and metadata
  * about the active chat state.
@@ -59,7 +33,11 @@ export async function collectInventory() {
       .map(async (c) => {
         let avatar_b64 = null;
         try {
-          avatar_b64 = await fetchAvatarBase64(c);
+          if (c.avatar) {
+            const src = `/characters/${encodeURIComponent(c.avatar)}`;
+            const result = await fetchLocalImageAsBase64(src);
+            avatar_b64 = result ? result.data : null;
+          }
         } catch (err) {
           console.warn(
             `[CharacterBridge] Failed to fetch avatar for ${c.name}:`,
@@ -84,7 +62,11 @@ export async function collectInventory() {
       .map(async ([id, name]) => {
         let avatar_b64 = null;
         try {
-          avatar_b64 = await fetchUserAvatarBase64(id);
+          if (id) {
+            const src = `/User Avatars/${encodeURIComponent(id)}`;
+            const result = await fetchLocalImageAsBase64(src);
+            avatar_b64 = result ? result.data : null;
+          }
         } catch (err) {
           console.warn(
             `[CharacterBridge] Failed to fetch persona avatar for ${name}:`,
