@@ -71,6 +71,7 @@ import {
 let shouldReconnect = true;
 let reconnectTimeout = null;
 let heartbeatInterval = null;
+let authenticated = false;
 
 // ---------------------------------------------------------------------------
 // WebSocket connection
@@ -99,19 +100,34 @@ function connect() {
 
   updateStatus("Connecting...", "orange");
 
-  // Build the WebSocket URL, appending shared secret as query param if set
-  let wsUrl = settings.bridgeUrl;
-  if (settings.sharedSecret) {
-    const separator = wsUrl.includes("?") ? "&" : "?";
-    wsUrl += `${separator}secret=${encodeURIComponent(settings.sharedSecret)}`;
-  }
+  // Connect to the WebSocket URL without embedding secrets
+  const wsUrl = settings.bridgeUrl;
 
   const socket = new WebSocket(wsUrl);
   setWs(socket);
+  authenticated = false;
 
   socket.onopen = async () => {
+    console.log("[CharacterBridge] Connected to bridge server, authenticating...");
+    updateStatus("Authenticating...", "orange");
+
+    // Send shared secret as first WebSocket frame (never as URL parameter)
+    if (settings.sharedSecret) {
+      safeSend({ type: "auth", secret: settings.sharedSecret });
+    } else {
+      // No secret configured — mark as authenticated immediately
+      authenticated = true;
+      onAuthenticated();
+    }
+  };
+
+  /**
+   * Called once authentication succeeds. Sets up heartbeat, sends inventory,
+   * and starts the inventory watcher.
+   */
+  async function onAuthenticated() {
     updateStatus("Connected", "green");
-    console.log("[CharacterBridge] Connected to bridge server");
+    console.log("[CharacterBridge] Authenticated and ready");
     resetExpressionSignature();
     setupExpressionObserver();
     scheduleExpressionUpdate(sharedState.lastActiveChatId);
@@ -134,12 +150,32 @@ function connect() {
 
     // Start watching for inventory changes
     startInventoryWatcher(safeSend);
-  };
+  }
+
+  const VALID_EXPRESSION_MODES = ["off", "status", "full"];
 
   socket.onmessage = async (event) => {
     let data;
     try {
       data = JSON.parse(event.data);
+
+      // Before authentication completes, only accept auth responses
+      if (!authenticated) {
+        if (data.type === "auth_ok") {
+          authenticated = true;
+          await onAuthenticated();
+          return;
+        }
+        if (data.type === "auth_failed") {
+          console.error("[CharacterBridge] Authentication failed:", data.reason || "unknown");
+          updateStatus("Auth failed", "red");
+          socket.close();
+          return;
+        }
+        // Ignore all other messages before authentication
+        console.warn("[CharacterBridge] Ignoring pre-auth message:", data.type);
+        return;
+      }
 
       if (data.type === "heartbeat") return;
 
@@ -158,9 +194,14 @@ function connect() {
         if (data.settings) {
           const settings = getSettings();
           if (data.settings.expressionMode) {
-            settings.expressionMode = data.settings.expressionMode;
-            resetExpressionSignature();
-            scheduleExpressionUpdate(sharedState.lastActiveChatId);
+            // Validate expressionMode against whitelist
+            if (VALID_EXPRESSION_MODES.includes(data.settings.expressionMode)) {
+              settings.expressionMode = data.settings.expressionMode;
+              resetExpressionSignature();
+              scheduleExpressionUpdate(sharedState.lastActiveChatId);
+            } else {
+              console.warn("[CharacterBridge] Invalid expressionMode rejected:", data.settings.expressionMode);
+            }
           }
           SillyTavern.getContext().saveSettingsDebounced();
         }

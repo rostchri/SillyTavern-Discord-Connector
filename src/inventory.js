@@ -66,16 +66,11 @@ export async function collectInventory() {
             err,
           );
         }
+        const description = c.description || "";
         return {
           name: c.name,
           avatar_b64,
-          description: c.description || "",
-          personality: c.personality || "",
-          first_mes: c.first_mes || "",
-          scenario: c.scenario || "",
-          mes_example: c.mes_example || "",
-          creator_notes: c.creator_notes || "",
-          tags: c.tags || [],
+          description: description.length > 500 ? description.slice(0, 500) : description,
         };
       }),
   );
