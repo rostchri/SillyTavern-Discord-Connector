@@ -1,7 +1,6 @@
 /**
- * SillyTavern-Discord-Connector - Bridge Extension for SillyTavern
- * Copyright (C) 2026 Senjin the Dragon
- * https://github.com/senjinthedragon/SillyTavern-Discord-Connector
+ * CharacterBridge Extension - Shared State
+ * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -20,13 +19,8 @@
 /**
  * Shared mutable bridge state.
  * Using a single object avoids circular imports when multiple modules need the
- * same mutable values (chatId, timezone, locale, plugins).
+ * same mutable values.
  */
 export const sharedState = {
   lastActiveChatId: null,
-  lastActiveUserLocale: null,
-  bridgeTimezone: null,
-  bridgeLocale: null,
-  bridgePlugins: null,
-  availableLanguages: null,
 };

@@ -1,7 +1,6 @@
 /**
- * SillyTavern-Discord-Connector - Bridge Extension for SillyTavern
- * Copyright (C) 2026 Senjin the Dragon
- * https://github.com/senjinthedragon/SillyTavern-Discord-Connector
+ * CharacterBridge Extension - Image Relay
+ * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -92,7 +91,7 @@ export async function fetchLocalImageAsBase64(src) {
     });
     if (!response.ok) {
       console.warn(
-        `[Discord Bridge] Image fetch failed (${response.status}): ${url}`,
+        `[CharacterBridge] Image fetch failed (${response.status}): ${url}`,
       );
       return null;
     }
@@ -103,7 +102,7 @@ export async function fetchLocalImageAsBase64(src) {
     const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
     if (blob.size > MAX_IMAGE_BYTES) {
       console.warn(
-        `[Discord Bridge] Image too large (${(blob.size / 1024 / 1024).toFixed(1)} MB, limit 50 MB): ${url}`,
+        `[CharacterBridge] Image too large (${(blob.size / 1024 / 1024).toFixed(1)} MB, limit 50 MB): ${url}`,
       );
       return null;
     }
@@ -135,7 +134,7 @@ export async function fetchLocalImageAsBase64(src) {
     return { data, mimeType, filename };
   } catch (err) {
     console.warn(
-      `[Discord Bridge] Failed to fetch local image: ${err.message}`,
+      `[CharacterBridge] Failed to fetch local image: ${err.message}`,
     );
     return null;
   }
@@ -207,9 +206,18 @@ async function collectImages(srcs) {
  * @param {Array} images
  * @param {string|null} [caption]
  */
-export function sendCollectedImages(chatId, images, caption) {
+export function sendCollectedImages(chatId, images, caption, charName) {
   if (!images?.length) return;
-  safeSend({ type: "send_images", chatId, images, caption: caption || null });
+  safeSend({
+    type: "send_images",
+    chatId,
+    images: images.map((img) => ({
+      data_b64: img.data || img.url,
+      mimeType: img.mimeType || "image/png",
+    })),
+    charName: charName || null,
+    caption: caption || null,
+  });
 }
 
 /**
@@ -238,13 +246,14 @@ export async function sendCharacterAvatar(chatId, character) {
   const src = `/characters/${encodeURIComponent(character.avatar)}`;
   const fetched = await fetchLocalImageAsBase64(src);
   if (!fetched) {
-    console.warn("[Discord Bridge] Could not fetch character avatar.");
+    console.warn("[CharacterBridge] Could not fetch character avatar.");
     return;
   }
   sendCollectedImages(
     chatId,
     [{ type: "inline", ...fetched }],
     character.name ? `**${character.name}**` : null,
+    character.name || null,
   );
 }
 

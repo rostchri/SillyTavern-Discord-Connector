@@ -1,7 +1,6 @@
 /**
- * SillyTavern-Discord-Connector - Bridge Extension for SillyTavern
- * Copyright (C) 2026 Senjin the Dragon
- * https://github.com/senjinthedragon/SillyTavern-Discord-Connector
+ * CharacterBridge Extension - Shared Utilities
+ * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as

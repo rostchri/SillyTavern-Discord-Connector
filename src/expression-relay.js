@@ -1,7 +1,6 @@
 /**
- * SillyTavern-Discord-Connector - Bridge Extension for SillyTavern
- * Copyright (C) 2026 Senjin the Dragon
- * https://github.com/senjinthedragon/SillyTavern-Discord-Connector
+ * CharacterBridge Extension - Expression Relay
+ * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -21,8 +20,8 @@
  * Expression relay.
  *
  * SillyTavern exposes the current expression in #expression-image. We observe
- * that element and forward updates to the bridge, where Discord activity can
- * be updated and (optionally) the expression image posted in-channel.
+ * that element and forward updates to the CharacterBridge, including the
+ * expression name (emotion) and optionally the expression image as base64.
  */
 
 import { safeSend } from "./ws.js";
@@ -162,17 +161,14 @@ export async function sendExpressionUpdate(chatIdHint = null) {
   if (signature === lastExpressionSignature) return;
   lastExpressionSignature = signature;
 
-  // Always include chatId so the server can update the Discord activity even in
-  // status-only mode. The image field is null in status mode so no image is posted.
   const chatId = chatIdHint || sharedState.lastActiveChatId || null;
 
   safeSend({
     type: "expression_update",
-    expression,
-    ownerName: ownerName || null,
+    charName: ownerName || null,
+    emotion: expression,
+    image_b64: image,
     chatId,
-    image,
-    userLocale: sharedState.lastActiveUserLocale || null,
   });
 }
 
@@ -180,7 +176,7 @@ export function scheduleExpressionUpdate(chatIdHint = null) {
   if (expressionDebounceTimer) clearTimeout(expressionDebounceTimer);
   expressionDebounceTimer = setTimeout(() => {
     sendExpressionUpdate(chatIdHint).catch((err) => {
-      console.warn("[Discord Bridge] Failed to send expression update:", err);
+      console.warn("[CharacterBridge] Failed to send expression update:", err);
     });
   }, EXPRESSION_DEBOUNCE_MS);
 }

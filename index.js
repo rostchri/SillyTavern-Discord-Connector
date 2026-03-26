@@ -1,7 +1,6 @@
 /**
- * SillyTavern-Discord-Connector - Bridge Extension for SillyTavern
- * Copyright (C) 2026 Senjin the Dragon
- * https://github.com/senjinthedragon/SillyTavern-Discord-Connector
+ * CharacterBridge Extension for SillyTavern
+ * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -16,46 +15,31 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  *
- * Runs inside SillyTavern as a third-party extension. Connects to the bridge
- * server (server.js) over WebSocket and acts as the intermediary between
- * Discord and SillyTavern's internals.
+ * Runs inside SillyTavern as a third-party extension. Connects to the
+ * CharacterBridge middleware over WebSocket and acts as the intermediary
+ * between external clients and SillyTavern's internals.
  *
  * Streaming:
  *   Each character turn gets a unique streamId at GENERATION_STARTED.
  *   STREAM_TOKEN_RECEIVED forwards cumulative text to the bridge for throttled
- *   Discord edits. GENERATION_ENDED sends stream_end, which tells the bridge to
- *   replace the live-edit message with a clean final post. Group chats include
- *   the character name; solo chats do not. All per-message listeners are
- *   registered and cleaned up inside handleUserMessage to prevent leaks.
+ *   display. GENERATION_ENDED sends stream_end with charName and finalText.
+ *   Group chats include the character name; solo chats do not.
  *
  * Image relay:
  *   Local ST images (thumbnails, generated art, avatars) are fetched here in
  *   the browser - where same-origin access is always available - and sent as
  *   base64 inline data. External URLs are passed through for the bridge to
- *   fetch directly. This split works regardless of whether the bridge runs on
- *   the same machine as SillyTavern.
+ *   fetch directly.
  *
- * Intro messages:
- *   /newchat greetings are written directly into the chat DOM before any
- *   generation events fire. A MutationObserver on #chat captures them and
- *   forwards them as intro_message packets.
+ * Character inventory:
+ *   On connect, the full character inventory (bots + personas) is sent to the
+ *   bridge. A polling watcher detects roster changes and sends incremental
+ *   character_update packets.
  *
- * AI image generation:
- *   /image sends an image_placeholder immediately, then fires /sd and watches
- *   the DOM for a new img.mes_img element. On success the image is sent as
- *   generate_image_result; on timeout or failure as generate_image_error.
- *   Requests are serialised per Discord channel with a hard watchdog so a
- *   stalled task can never permanently block retries.
- *
- * Autocomplete:
- *   Character and group lists are cached with a 60-second TTL. Chat lists are
- *   keyed by characterId and invalidated on newchat/switchchar/switchgroup
- *   rather than by TTL, keeping them perfectly current.
- *
- * Reactions:
- *   Watches #expression-image in the ST DOM and forwards expression updates.
- *   Depending on extension settings, updates Discord activity only (default)
- *   or activity plus expression image posts to the last active Discord channel.
+ * Expression relay:
+ *   Watches #expression-image in the ST DOM and forwards expression updates
+ *   to the CharacterBridge, including the expression name and optionally the
+ *   expression image as base64.
  */
 
 // ---------------------------------------------------------------------------
@@ -66,22 +50,19 @@ import { setWs, getWs, safeSend } from "./src/ws.js";
 import { MODULE_NAME, getSettings, updateStatus } from "./src/settings.js";
 import { sharedState } from "./src/state.js";
 import {
-  loadUserLocale,
-  loadUiLocale,
-  applyUiTranslations,
-  ts,
-} from "./src/i18n.js";
-import {
   resetExpressionSignature,
   setupExpressionObserver,
   scheduleExpressionUpdate,
 } from "./src/expression-relay.js";
-import { setImageGenerationTimeoutMs } from "./src/image-generation.js";
 import {
   handleUserMessage,
   handleExecuteCommand,
-  handleGetAutocomplete,
 } from "./src/commands.js";
+import {
+  collectInventory,
+  startInventoryWatcher,
+  stopInventoryWatcher,
+} from "./src/inventory.js";
 
 // ---------------------------------------------------------------------------
 // Connection state (WebSocket lifecycle only - all other state is in src/)
@@ -107,7 +88,7 @@ function connect() {
 
   const settings = getSettings();
   if (!settings.bridgeUrl) {
-    updateStatus(ts("ui.status.urlNotSet"), "red");
+    updateStatus("URL not set", "red");
     return;
   }
 
@@ -116,20 +97,43 @@ function connect() {
     reconnectTimeout = null;
   }
 
-  updateStatus(ts("ui.status.connecting"), "orange");
-  const socket = new WebSocket(settings.bridgeUrl);
+  updateStatus("Connecting...", "orange");
+
+  // Build the WebSocket URL, appending shared secret as query param if set
+  let wsUrl = settings.bridgeUrl;
+  if (settings.sharedSecret) {
+    const separator = wsUrl.includes("?") ? "&" : "?";
+    wsUrl += `${separator}secret=${encodeURIComponent(settings.sharedSecret)}`;
+  }
+
+  const socket = new WebSocket(wsUrl);
   setWs(socket);
 
-  socket.onopen = () => {
-    updateStatus(ts("ui.status.connected"), "green");
-    console.log("[Discord Bridge] Connected to bridge server");
+  socket.onopen = async () => {
+    updateStatus("Connected", "green");
+    console.log("[CharacterBridge] Connected to bridge server");
     resetExpressionSignature();
     setupExpressionObserver();
     scheduleExpressionUpdate(sharedState.lastActiveChatId);
+
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     heartbeatInterval = setInterval(() => {
       safeSend({ type: "heartbeat" });
     }, 30000);
+
+    // Send the full character inventory on connect
+    try {
+      const inventory = await collectInventory();
+      safeSend({
+        type: "character_inventory",
+        ...inventory,
+      });
+    } catch (err) {
+      console.warn("[CharacterBridge] Failed to send initial inventory:", err);
+    }
+
+    // Start watching for inventory changes
+    startInventoryWatcher(safeSend);
   };
 
   socket.onmessage = async (event) => {
@@ -139,69 +143,27 @@ function connect() {
 
       if (data.type === "heartbeat") return;
 
-      if (data.type === "bridge_config") {
-        // Validate timezone and locale before storing - invalid values would
-        // cause Intl.DateTimeFormat to throw at autocomplete time.
-        if (data.timezone) {
-          try {
-            Intl.DateTimeFormat(undefined, { timeZone: data.timezone });
-            sharedState.bridgeTimezone = data.timezone;
-          } catch {
-            console.warn(
-              `[Discord Bridge] Invalid timezone in bridge config: "${data.timezone}" - falling back to local time`,
-            );
-            sharedState.bridgeTimezone = null;
-          }
-        } else {
-          sharedState.bridgeTimezone = null;
-        }
-        if (data.locale) {
-          try {
-            Intl.DateTimeFormat(data.locale);
-            sharedState.bridgeLocale = data.locale;
-          } catch {
-            console.warn(
-              `[Discord Bridge] Invalid locale in bridge config: "${data.locale}" - falling back to browser locale`,
-            );
-            sharedState.bridgeLocale = null;
-          }
-        } else {
-          sharedState.bridgeLocale = null;
-        }
-        // Load the user-facing locale for Discord command replies.
-        // Always load at least the English fallback so t() never returns raw keys.
-        loadUserLocale(data.userLocale || "en").catch(() => {});
-        sharedState.bridgePlugins = data.plugins || null;
-        if (Array.isArray(data.availableLanguages)) {
-          sharedState.availableLanguages = data.availableLanguages;
-        }
-        const hasProPlugin = Object.entries(data.plugins || {}).some(
-          ([platform, status]) => platform !== "discord" && status === "active",
-        );
-        $("#discord_multi_platform_section").toggle(hasProPlugin);
-        if (
-          typeof data.imagePlaceholderTimeoutMs === "number" &&
-          data.imagePlaceholderTimeoutMs > 0
-        ) {
-          setImageGenerationTimeoutMs(data.imagePlaceholderTimeoutMs);
-        }
-        // Tell the server the active persona name so it can label cross-relay
-        // messages correctly without requiring a /mypersona setup first.
-        // powerUserSettings.persona is the active persona ID; fall back to
-        // default_persona if no per-chat override is set.
-        const pSettings = SillyTavern.getContext().powerUserSettings;
-        const personaId = pSettings?.default_persona || pSettings?.persona;
-        const personaName = personaId ? pSettings?.personas?.[personaId] : null;
-        safeSend({
-          type: "client_info",
-          ...(personaName ? { personaName } : {}),
-          crossPlatformRelay: getSettings().crossPlatformRelay,
-        });
+      if (data.type === "user_message") {
+        await handleUserMessage(data);
         return;
       }
 
-      if (data.type === "user_message") {
-        await handleUserMessage(data);
+      if (data.type === "execute_command") {
+        await handleExecuteCommand(data);
+        return;
+      }
+
+      if (data.type === "config_update") {
+        // Handle dynamic config updates from CharacterBridge
+        if (data.settings) {
+          const settings = getSettings();
+          if (data.settings.expressionMode) {
+            settings.expressionMode = data.settings.expressionMode;
+            resetExpressionSignature();
+            scheduleExpressionUpdate(sharedState.lastActiveChatId);
+          }
+          SillyTavern.getContext().saveSettingsDebounced();
+        }
         return;
       }
 
@@ -210,18 +172,8 @@ function connect() {
           setTimeout(() => window.location.reload(), 500);
         return;
       }
-
-      if (data.type === "get_autocomplete") {
-        await handleGetAutocomplete(data);
-        return;
-      }
-
-      if (data.type === "execute_command") {
-        await handleExecuteCommand(data);
-        return;
-      }
     } catch (error) {
-      console.error("[Discord Bridge] Message handling error:", error);
+      console.error("[CharacterBridge] Message handling error:", error);
       if (data?.chatId) {
         safeSend({
           type: "error_message",
@@ -233,9 +185,9 @@ function connect() {
   };
 
   socket.onclose = () => {
-    updateStatus(ts("ui.status.disconnected"), "red");
+    updateStatus("Disconnected", "red");
     setWs(null);
-    $("#discord_multi_platform_section").hide();
+    stopInventoryWatcher();
 
     if (heartbeatInterval) {
       clearInterval(heartbeatInterval);
@@ -244,7 +196,7 @@ function connect() {
 
     const settings = getSettings();
     if (settings.autoConnect && shouldReconnect) {
-      updateStatus(ts("ui.status.reconnecting"), "orange");
+      updateStatus("Reconnecting...", "orange");
       if (!reconnectTimeout) {
         reconnectTimeout = setTimeout(() => {
           reconnectTimeout = null;
@@ -255,20 +207,21 @@ function connect() {
   };
 
   socket.onerror = (error) => {
-    console.error("[Discord Bridge] WebSocket error:", error);
-    updateStatus(ts("ui.status.error"), "red");
+    console.error("[CharacterBridge] WebSocket error:", error);
+    updateStatus("Error", "red");
   };
 }
 
 function disconnect() {
   shouldReconnect = false;
+  stopInventoryWatcher();
   const ws = getWs();
   if (ws) ws.close();
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
     reconnectTimeout = null;
   }
-  updateStatus(ts("ui.status.disconnected"), "red");
+  updateStatus("Disconnected", "red");
 }
 
 // ---------------------------------------------------------------------------
@@ -277,41 +230,25 @@ function disconnect() {
 
 jQuery(async () => {
   try {
-    // Detect SillyTavern's active language for the settings panel UI.
-    // Falls back to English if the i18n module is unavailable (older ST builds).
-    let stLocale = "en";
-    try {
-      const { getCurrentLocale } =
-        await import("../../../../../scripts/i18n.js");
-      stLocale = getCurrentLocale() || "en";
-    } catch {
-      // Older ST build without getCurrentLocale - stay with English.
-    }
-    await loadUiLocale(stLocale);
-
     const settingsHtml = await $.get(
       `/scripts/extensions/third-party/${MODULE_NAME}/settings.html`,
     );
     const $settings = $(settingsHtml);
-    const settingsRoot = $settings.filter("*")[0] ?? $settings.find("*")[0];
-    if (settingsRoot) applyUiTranslations(settingsRoot);
     $("#extensions_settings").append($settings);
 
     const settings = getSettings();
     $("#discord_bridge_url").val(settings.bridgeUrl);
+    $("#discord_shared_secret").val(settings.sharedSecret);
     $("#discord_auto_connect").prop("checked", settings.autoConnect);
     $("#discord_expression_mode").val(settings.expressionMode);
-    $("#discord_allow_user_persona_save").prop(
-      "checked",
-      settings.allowUserPersonaSave,
-    );
-    $("#discord_cross_platform_relay").prop(
-      "checked",
-      settings.crossPlatformRelay,
-    );
 
     $("#discord_bridge_url").on("input", () => {
       getSettings().bridgeUrl = $("#discord_bridge_url").val();
+      SillyTavern.getContext().saveSettingsDebounced();
+    });
+
+    $("#discord_shared_secret").on("input", () => {
+      getSettings().sharedSecret = $("#discord_shared_secret").val();
       SillyTavern.getContext().saveSettingsDebounced();
     });
 
@@ -327,32 +264,11 @@ jQuery(async () => {
       scheduleExpressionUpdate(sharedState.lastActiveChatId);
     });
 
-    $("#discord_allow_user_persona_save").on("change", () => {
-      getSettings().allowUserPersonaSave = $(
-        "#discord_allow_user_persona_save",
-      ).prop("checked");
-      SillyTavern.getContext().saveSettingsDebounced();
-    });
-
-    $("#discord_cross_platform_relay").on("change", () => {
-      getSettings().crossPlatformRelay = $(
-        "#discord_cross_platform_relay",
-      ).prop("checked");
-      SillyTavern.getContext().saveSettingsDebounced();
-      safeSend({
-        type: "client_info",
-        crossPlatformRelay: getSettings().crossPlatformRelay,
-      });
-    });
-
     $("#discord_connect_button").on("click", connect);
     $("#discord_disconnect_button").on("click", disconnect);
 
     // -----------------------------------------------------------------------
     // Global tooltip for .dc-info elements
-    //
-    // Uses position:fixed so it escapes ST's overflow:hidden extensions panel.
-    // Handles mouse, keyboard (focus/blur), and touch (tap to toggle).
     // -----------------------------------------------------------------------
     const $tip = $('<div id="dc-tooltip"></div>').appendTo("body");
     let tipTarget = null;
@@ -363,20 +279,17 @@ jQuery(async () => {
       tipTarget = el;
       $tip.text(text);
 
-      // Position above the icon, centered horizontally, clamped to viewport
       const r = el.getBoundingClientRect();
-      const tipW = 240; // max-width from CSS
+      const tipW = 240;
       let left = r.left + r.width / 2 - tipW / 2;
       left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
 
       $tip.css({ left: left + "px", top: "", bottom: "" });
 
-      // Measure actual rendered height after setting text/position
       $tip.addClass("dc-tooltip-visible");
       const tipH = $tip.outerHeight();
       $tip.removeClass("dc-tooltip-visible");
 
-      // Prefer above; fall back to below if it would clip the top
       if (r.top - tipH - 10 >= 8) {
         $tip.css({ top: r.top - tipH - 10 + "px" });
       } else {
@@ -391,19 +304,14 @@ jQuery(async () => {
       $tip.removeClass("dc-tooltip-visible");
     }
 
-    // Mouse
     $(document).on("mouseenter", ".dc-info", function () {
       showTip(this);
     });
     $(document).on("mouseleave", ".dc-info", hideTip);
-
-    // Keyboard (tabindex="0" on each .dc-info)
     $(document).on("focus", ".dc-info", function () {
       showTip(this);
     });
     $(document).on("blur", ".dc-info", hideTip);
-
-    // Touch - tap to toggle, tap anywhere else to hide
     $(document).on("touchstart", ".dc-info", function (e) {
       e.preventDefault();
       if (tipTarget === this) {
@@ -418,6 +326,6 @@ jQuery(async () => {
 
     if (settings.autoConnect) connect();
   } catch (error) {
-    console.error("[Discord Bridge] Failed to load settings UI:", error);
+    console.error("[CharacterBridge] Failed to load settings UI:", error);
   }
 });
