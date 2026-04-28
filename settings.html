@@ -84,6 +84,30 @@
           placeholder="Enter shared secret…"
         />
       </div>
+      <div class="discord-connector_block flex-container flexFlowColumn gap5">
+        <label for="chatroom_room_id">
+          <span>Room ID</span>
+          <span class="dc-info" role="button" tabindex="0" data-tooltip="Roleplay-Room-ID auf dem Chatroom-Backend, der von dieser ST-Instanz bedient wird. Pflichtfeld.">&#9432;</span>
+        </label>
+        <input
+          type="text"
+          id="chatroom_room_id"
+          class="text_pole"
+          placeholder="z.B. roleplay-eldoria"
+        />
+      </div>
+      <div class="discord-connector_block flex-container flexFlowColumn gap5">
+        <label for="chatroom_bridge_id">
+          <span>Bridge ID (optional)</span>
+          <span class="dc-info" role="button" tabindex="0" data-tooltip="Optionaler Identifier zur Unterscheidung mehrerer Bridges in den Server-Logs.">&#9432;</span>
+        </label>
+        <input
+          type="text"
+          id="chatroom_bridge_id"
+          class="text_pole"
+          placeholder="z.B. desktop-st"
+        />
+      </div>
       <div class="discord-connector_block flex-container gap5">
         <input id="chatroom_connect_button"    class="menu_button flex1" type="button" value="Connect" />
         <input id="chatroom_disconnect_button" class="menu_button flex1" type="button" value="Disconnect" />

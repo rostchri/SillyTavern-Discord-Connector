@@ -16,6 +16,10 @@ export const DEFAULT_SETTINGS = {
   chatroomUrl: "",
   /** Shared secret for the first-frame auth handshake with Chatroom. */
   chatroomSharedSecret: "",
+  /** Roleplay-Room-ID die diese ST-Instanz bedient. Pflicht. */
+  chatroomRoomId: "",
+  /** Optionaler Bridge-Identifier fuer Logging server-seitig. */
+  chatroomBridgeId: "",
   /** Whether to auto-connect to Chatroom on page load. */
   chatroomAutoConnect: true,
 };

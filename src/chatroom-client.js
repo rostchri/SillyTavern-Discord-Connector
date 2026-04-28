@@ -196,12 +196,20 @@ export function connect() {
     _resetPongDeadline();
 
     const secret = settings.chatroomSharedSecret;
-    if (secret) {
-      _rawSend({ type: 'auth', secret });
-    } else {
-      // No secret configured — treat as pre-authenticated
+    const roomId = settings.chatroomRoomId;
+    const bridgeId = settings.chatroomBridgeId;
+    if (secret && roomId) {
+      const authFrame = { type: 'auth', secret, room_id: roomId };
+      if (bridgeId) authFrame.bridge_id = bridgeId;
+      _rawSend(authFrame);
+    } else if (!secret && !roomId) {
+      // No secret + no room_id configured — treat as pre-authenticated (test mode)
       _authenticated = true;
       _onAuthenticated();
+    } else {
+      console.error('[CharacterBridge/chatroom] Both chatroomSharedSecret and chatroomRoomId must be set.');
+      updateStatus('Config incomplete', 'red');
+      _ws.close(4000, 'Missing room_id or secret');
     }
   };
 
