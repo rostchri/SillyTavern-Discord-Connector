@@ -36,7 +36,9 @@
     "install-server": "cd server && npm install",
     "test-release": "npm run verify-release",
     "start": "cd server && node server.js",
-    "release-checklist": "node scripts/release-checklist.js"
+    "release-checklist": "node scripts/release-checklist.js",
+    "test": "node --test src/chatroom-client.test.js",
+    "test:src": "node --test src/chatroom-client.test.js"
   },
   "author": "Senjin the Dragon <https://github.com/senjinthedragon>",
   "license": "MIT",
@@ -53,6 +55,7 @@
   },
   "homepage": "https://github.com/senjinthedragon/SillyTavern-Discord-Connector#readme",
   "devDependencies": {
-    "version-everything": "^0.11.4"
+    "version-everything": "^0.11.4",
+    "ws": "8.19.0"
   }
 }
