@@ -223,8 +223,17 @@ export async function handleUserMessage(data) {
     );
   };
 
-  // Assigns a new streamId at the start of each character turn
-  const onGenerationStarted = () => {
+  // True while a background (quiet) generation such as memory consolidation is
+  // in flight. GENERATION_STARTED/ENDED for quiet runs must be ignored so they
+  // don't prematurely close the listeners before the real generation completes.
+  let isQuietGeneration = false;
+
+  // Assigns a new streamId at the start of each character turn.
+  // Quiet generations (type === 'quiet') are background tasks like memory
+  // consolidation - ignore them so they don't reset state or close listeners.
+  const onGenerationStarted = (type) => {
+    isQuietGeneration = type === 'quiet';
+    if (isQuietGeneration) return;
     currentStreamId = `${messageState.chatId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const ctx = SillyTavern.getContext();
     currentCharacterName = ctx.groupId ? ctx.name2 || null : null;
@@ -251,6 +260,10 @@ export async function handleUserMessage(data) {
   // Fires once per character turn. Closes their stream.
   // In solo chat also triggers the final ai_reply.
   const onGenerationEnded = () => {
+    if (isQuietGeneration) {
+      isQuietGeneration = false;
+      return;
+    }
     sendStreamEnd();
     if (!SillyTavern.getContext().groupId) {
       removeAllListeners();
@@ -268,6 +281,10 @@ export async function handleUserMessage(data) {
 
   // User aborted - clean up without sending a reply.
   const onGenerationStopped = () => {
+    if (isQuietGeneration) {
+      isQuietGeneration = false;
+      return;
+    }
     removeAllListeners();
     sendStreamEnd();
   };
