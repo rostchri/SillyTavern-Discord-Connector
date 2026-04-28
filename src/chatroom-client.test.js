@@ -127,6 +127,9 @@ async function withServer(secret, fn) {
   const settings = getSettings();
   settings.chatroomUrl = `ws://127.0.0.1:${srv.port}`;
   settings.chatroomSharedSecret = secret ?? '';
+  // Provide room_id whenever a secret is set (required for auth-frame).
+  // Empty room_id + empty secret stays in pre-auth test mode.
+  settings.chatroomRoomId = secret ? 'test-room' : '';
   try {
     await fn(srv);
   } finally {
