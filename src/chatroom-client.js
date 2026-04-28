@@ -251,8 +251,16 @@ export function connect() {
     _dispatch(packet);
   };
 
+  // Capture the socket this handler belongs to. If the global _ws gets
+  // replaced by a newer connect() before this onclose fires, we must NOT
+  // clobber the new socket or trigger a reconnect cascade.
+  const _thisWs = _ws;
   _ws.onclose = (event) => {
     console.log('[CharacterBridge/chatroom] Socket closed', event.code, event.reason);
+    if (_ws !== _thisWs) {
+      // A newer connect() has replaced us — leave the current state alone.
+      return;
+    }
     _ws = null;
     _authenticated = false;
     _stopTimers();
