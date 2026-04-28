@@ -12,6 +12,12 @@ export const DEFAULT_SETTINGS = {
   sharedSecret: "",
   autoConnect: true,
   expressionMode: "status",
+  /** Direct Chatroom backend URL (Variante 3 — no middleware). */
+  chatroomUrl: "",
+  /** Shared secret for the first-frame auth handshake with Chatroom. */
+  chatroomSharedSecret: "",
+  /** Whether to auto-connect to Chatroom on page load. */
+  chatroomAutoConnect: true,
 };
 
 let _initialized = false;

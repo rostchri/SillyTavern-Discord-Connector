@@ -15,255 +15,146 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  *
- * Runs inside SillyTavern as a third-party extension. Connects to the
- * CharacterBridge middleware over WebSocket and acts as the intermediary
- * between external clients and SillyTavern's internals.
+ * Runs inside SillyTavern as a third-party extension. Connects directly to the
+ * Chatroom backend (Variante 3 — no separate middleware) over WebSocket.
  *
  * Streaming:
  *   Each character turn gets a unique streamId at GENERATION_STARTED.
- *   STREAM_TOKEN_RECEIVED forwards cumulative text to the bridge for throttled
- *   display. GENERATION_ENDED sends stream_end with charName and finalText.
+ *   STREAM_TOKEN_RECEIVED forwards cumulative text to Chatroom.
+ *   GENERATION_ENDED sends stream_end with charName and finalText.
  *   Group chats include the character name; solo chats do not.
  *
  * Image relay:
  *   Local ST images (thumbnails, generated art, avatars) are fetched here in
- *   the browser - where same-origin access is always available - and sent as
- *   base64 inline data. External URLs are passed through for the bridge to
- *   fetch directly.
+ *   the browser — where same-origin access is always available — and sent as
+ *   base64 inline data.
  *
  * Character inventory:
- *   On connect, the full character inventory (bots + personas) is sent to the
- *   bridge. A polling watcher detects roster changes and sends incremental
- *   character_update packets.
+ *   On connect, the full character inventory (bots + personas) is sent to
+ *   Chatroom. A polling watcher detects roster changes and sends incremental
+ *   inventory_update packets.
  *
  * Expression relay:
  *   Watches #expression-image in the ST DOM and forwards expression updates
- *   to the CharacterBridge, including the expression name and optionally the
- *   expression image as base64.
+ *   to Chatroom, including the expression name and optionally the expression
+ *   image as base64.
+ *
+ * Authentication:
+ *   See src/chatroom-client.js — first-frame auth packet strategy.
  */
 
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
 
-import { setWs, getWs, safeSend } from "./src/ws.js";
-import { MODULE_NAME, getSettings, updateStatus } from "./src/settings.js";
-import { sharedState } from "./src/state.js";
+import {
+  connect,
+  disconnect,
+  onMessage,
+  sendInventory,
+  sendInventoryUpdate,
+  isConnected,
+} from './src/chatroom-client.js';
+import { MODULE_NAME, getSettings, updateStatus } from './src/settings.js';
+import { sharedState } from './src/state.js';
 import {
   resetExpressionSignature,
   setupExpressionObserver,
   scheduleExpressionUpdate,
-} from "./src/expression-relay.js";
+} from './src/expression-relay.js';
 import {
   handleUserMessage,
   handleExecuteCommand,
-} from "./src/commands.js";
+} from './src/commands.js';
 import {
   collectInventory,
   startInventoryWatcher,
   stopInventoryWatcher,
-} from "./src/inventory.js";
+} from './src/inventory.js';
 
 // ---------------------------------------------------------------------------
-// Connection state (WebSocket lifecycle only - all other state is in src/)
+// Inbound packet router
 // ---------------------------------------------------------------------------
 
-let shouldReconnect = true;
-let reconnectTimeout = null;
-let heartbeatInterval = null;
-let authenticated = false;
+const VALID_EXPRESSION_MODES = ['off', 'status', 'full'];
 
-// ---------------------------------------------------------------------------
-// WebSocket connection
-// ---------------------------------------------------------------------------
+onMessage(async (packet) => {
+  try {
+    switch (packet.type) {
+      case 'user_message':
+        await handleUserMessage(packet);
+        break;
 
-function connect() {
-  const ws = getWs();
-  if (
-    ws &&
-    (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
-  )
-    return;
+      case 'command':
+        // Chatroom sends {"type":"command","cmd":"...","args":[...]}
+        await handleExecuteCommand({ command: packet.cmd, args: packet.args ?? [], chatId: packet.chatId });
+        break;
 
-  shouldReconnect = true;
+      case 'execute_command':
+        // Legacy packet name — kept for compatibility during transition
+        await handleExecuteCommand(packet);
+        break;
 
-  const settings = getSettings();
-  if (!settings.bridgeUrl) {
-    updateStatus("URL not set", "red");
-    return;
-  }
-
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
-  }
-
-  updateStatus("Connecting...", "orange");
-
-  // Connect to the WebSocket URL without embedding secrets
-  const wsUrl = settings.bridgeUrl;
-
-  const socket = new WebSocket(wsUrl);
-  setWs(socket);
-  authenticated = false;
-
-  socket.onopen = async () => {
-    console.log("[CharacterBridge] Connected to bridge server, authenticating...");
-    updateStatus("Authenticating...", "orange");
-
-    // Send shared secret as first WebSocket frame (never as URL parameter)
-    if (settings.sharedSecret) {
-      safeSend({ type: "auth", secret: settings.sharedSecret });
-    } else {
-      // No secret configured — mark as authenticated immediately
-      authenticated = true;
-      onAuthenticated();
-    }
-  };
-
-  /**
-   * Called once authentication succeeds. Sets up heartbeat, sends inventory,
-   * and starts the inventory watcher.
-   */
-  async function onAuthenticated() {
-    updateStatus("Connected", "green");
-    console.log("[CharacterBridge] Authenticated and ready");
-    resetExpressionSignature();
-    setupExpressionObserver();
-    scheduleExpressionUpdate(sharedState.lastActiveChatId);
-
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
-    heartbeatInterval = setInterval(() => {
-      safeSend({ type: "heartbeat" });
-    }, 30000);
-
-    // Send the full character inventory on connect
-    try {
-      const inventory = await collectInventory();
-      safeSend({
-        type: "character_inventory",
-        ...inventory,
-      });
-    } catch (err) {
-      console.warn("[CharacterBridge] Failed to send initial inventory:", err);
-    }
-
-    // Start watching for inventory changes
-    startInventoryWatcher(safeSend);
-  }
-
-  const VALID_EXPRESSION_MODES = ["off", "status", "full"];
-
-  socket.onmessage = async (event) => {
-    let data;
-    try {
-      data = JSON.parse(event.data);
-
-      // Before authentication completes, only accept auth responses
-      if (!authenticated) {
-        if (data.type === "auth_ok") {
-          authenticated = true;
-          await onAuthenticated();
-          return;
-        }
-        if (data.type === "auth_failed") {
-          console.error("[CharacterBridge] Authentication failed:", data.reason || "unknown");
-          updateStatus("Auth failed", "red");
-          socket.close();
-          return;
-        }
-        // Ignore all other messages before authentication
-        console.warn("[CharacterBridge] Ignoring pre-auth message:", data.type);
-        return;
-      }
-
-      if (data.type === "heartbeat") return;
-
-      if (data.type === "user_message") {
-        await handleUserMessage(data);
-        return;
-      }
-
-      if (data.type === "execute_command") {
-        await handleExecuteCommand(data);
-        return;
-      }
-
-      if (data.type === "config_update") {
-        // Handle dynamic config updates from CharacterBridge
-        if (data.settings) {
+      case 'config_update':
+        if (packet.settings) {
           const settings = getSettings();
-          if (data.settings.expressionMode) {
-            // Validate expressionMode against whitelist
-            if (VALID_EXPRESSION_MODES.includes(data.settings.expressionMode)) {
-              settings.expressionMode = data.settings.expressionMode;
-              resetExpressionSignature();
-              scheduleExpressionUpdate(sharedState.lastActiveChatId);
-            } else {
-              console.warn("[CharacterBridge] Invalid expressionMode rejected:", data.settings.expressionMode);
-            }
+          if (
+            packet.settings.expressionMode &&
+            VALID_EXPRESSION_MODES.includes(packet.settings.expressionMode)
+          ) {
+            settings.expressionMode = packet.settings.expressionMode;
+            resetExpressionSignature();
+            scheduleExpressionUpdate(sharedState.lastActiveChatId);
+          } else if (packet.settings.expressionMode) {
+            console.warn('[CharacterBridge] Invalid expressionMode rejected:', packet.settings.expressionMode);
           }
           SillyTavern.getContext().saveSettingsDebounced();
         }
-        return;
-      }
+        break;
 
-      if (data.type === "system_command") {
-        if (data.command === "reload_ui_only")
+      case 'system_command':
+        if (packet.command === 'reload_ui_only')
           setTimeout(() => window.location.reload(), 500);
-        return;
-      }
-    } catch (error) {
-      console.error("[CharacterBridge] Message handling error:", error);
-      if (data?.chatId) {
-        safeSend({
-          type: "error_message",
-          chatId: data.chatId,
-          text: "Internal error processing request.",
-        });
-      }
+        break;
+
+      default:
+        // Unknown packet types are silently ignored
+        break;
     }
-  };
-
-  socket.onclose = () => {
-    updateStatus("Disconnected", "red");
-    setWs(null);
-    stopInventoryWatcher();
-
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-      heartbeatInterval = null;
-    }
-
-    const settings = getSettings();
-    if (settings.autoConnect && shouldReconnect) {
-      updateStatus("Reconnecting...", "orange");
-      if (!reconnectTimeout) {
-        reconnectTimeout = setTimeout(() => {
-          reconnectTimeout = null;
-          connect();
-        }, 5000);
-      }
-    }
-  };
-
-  socket.onerror = (error) => {
-    console.error("[CharacterBridge] WebSocket error:", error);
-    updateStatus("Error", "red");
-  };
-}
-
-function disconnect() {
-  shouldReconnect = false;
-  stopInventoryWatcher();
-  const ws = getWs();
-  if (ws) ws.close();
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
+  } catch (err) {
+    console.error('[CharacterBridge] Packet handling error:', err);
   }
-  updateStatus("Disconnected", "red");
-}
+});
+
+// ---------------------------------------------------------------------------
+// Post-authentication setup  (called once per successful connect)
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by chatroom-client after auth_ok. Sends inventory and starts watcher.
+ * We hook into onMessage for "auth_ok" to avoid tight coupling, but chatroom-
+ * client already fires the status update and heartbeat. Here we only need the
+ * application-level setup that belongs to the extension, not the transport.
+ */
+onMessage(async (packet) => {
+  // "connected" is a synthetic packet emitted by chatroom-client after auth_ok
+  // to let the extension layer react without importing internal hooks.
+  // See chatroom-client.js — _onAuthenticated() dispatches this packet.
+  if (packet.type !== '_connected') return;
+
+  resetExpressionSignature();
+  setupExpressionObserver();
+  scheduleExpressionUpdate(sharedState.lastActiveChatId);
+
+  try {
+    const inventory = await collectInventory();
+    sendInventory(inventory);
+  } catch (err) {
+    console.warn('[CharacterBridge] Failed to send initial inventory:', err);
+  }
+
+  startInventoryWatcher((inventoryPayload) => sendInventoryUpdate(inventoryPayload));
+});
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -275,47 +166,113 @@ jQuery(async () => {
       `/scripts/extensions/third-party/${MODULE_NAME}/settings.html`,
     );
     const $settings = $(settingsHtml);
-    $("#extensions_settings").append($settings);
+    $('#extensions_settings').append($settings);
 
     const settings = getSettings();
-    $("#discord_bridge_url").val(settings.bridgeUrl);
-    $("#discord_shared_secret").val(settings.sharedSecret);
-    $("#discord_auto_connect").prop("checked", settings.autoConnect);
-    $("#discord_expression_mode").val(settings.expressionMode);
 
-    $("#discord_bridge_url").on("input", () => {
-      getSettings().bridgeUrl = $("#discord_bridge_url").val();
+    // ---- Chatroom section --------------------------------------------------
+    $('#chatroom_url').val(settings.chatroomUrl ?? '');
+    $('#chatroom_shared_secret').val(settings.chatroomSharedSecret ?? '');
+    $('#chatroom_auto_connect').prop('checked', settings.chatroomAutoConnect ?? true);
+
+    $('#chatroom_url').on('input', () => {
+      getSettings().chatroomUrl = $('#chatroom_url').val();
       SillyTavern.getContext().saveSettingsDebounced();
     });
 
-    $("#discord_shared_secret").on("input", () => {
-      getSettings().sharedSecret = $("#discord_shared_secret").val();
+    $('#chatroom_shared_secret').on('input', () => {
+      getSettings().chatroomSharedSecret = $('#chatroom_shared_secret').val();
       SillyTavern.getContext().saveSettingsDebounced();
     });
 
-    $("#discord_auto_connect").on("change", () => {
-      getSettings().autoConnect = $("#discord_auto_connect").prop("checked");
+    $('#chatroom_auto_connect').on('change', () => {
+      getSettings().chatroomAutoConnect = $('#chatroom_auto_connect').prop('checked');
       SillyTavern.getContext().saveSettingsDebounced();
     });
 
-    $("#discord_expression_mode").on("change", () => {
-      getSettings().expressionMode = $("#discord_expression_mode").val();
+    $('#chatroom_connect_button').on('click', () => {
+      stopInventoryWatcher();
+      connect();
+    });
+
+    $('#chatroom_disconnect_button').on('click', () => {
+      stopInventoryWatcher();
+      disconnect();
+    });
+
+    $('#chatroom_test_button').on('click', async () => {
+      const url = $('#chatroom_url').val()?.trim();
+      if (!url) {
+        updateStatus('Enter a URL first', 'red');
+        return;
+      }
+      updateStatus('Testing…', 'orange');
+      try {
+        const testWs = new WebSocket(url);
+        const timer = setTimeout(() => {
+          testWs.close();
+          updateStatus('Timeout — server not reachable', 'red');
+        }, 5000);
+        testWs.onopen = () => {
+          clearTimeout(timer);
+          testWs.close();
+          updateStatus('Reachable (TCP open)', 'green');
+        };
+        testWs.onerror = () => {
+          clearTimeout(timer);
+          updateStatus('Connection refused', 'red');
+        };
+      } catch (err) {
+        updateStatus(`Error: ${err.message}`, 'red');
+      }
+    });
+
+    // ---- Legacy bridge section (kept for backward compat UI wiring) --------
+    $('#discord_bridge_url').val(settings.bridgeUrl);
+    $('#discord_shared_secret').val(settings.sharedSecret);
+    $('#discord_auto_connect').prop('checked', settings.autoConnect);
+    $('#discord_expression_mode').val(settings.expressionMode);
+
+    $('#discord_bridge_url').on('input', () => {
+      getSettings().bridgeUrl = $('#discord_bridge_url').val();
+      SillyTavern.getContext().saveSettingsDebounced();
+    });
+
+    $('#discord_shared_secret').on('input', () => {
+      getSettings().sharedSecret = $('#discord_shared_secret').val();
+      SillyTavern.getContext().saveSettingsDebounced();
+    });
+
+    $('#discord_auto_connect').on('change', () => {
+      getSettings().autoConnect = $('#discord_auto_connect').prop('checked');
+      SillyTavern.getContext().saveSettingsDebounced();
+    });
+
+    $('#discord_expression_mode').on('change', () => {
+      getSettings().expressionMode = $('#discord_expression_mode').val();
       resetExpressionSignature();
       SillyTavern.getContext().saveSettingsDebounced();
       scheduleExpressionUpdate(sharedState.lastActiveChatId);
     });
 
-    $("#discord_connect_button").on("click", connect);
-    $("#discord_disconnect_button").on("click", disconnect);
+    // The old Connect/Disconnect buttons now also drive the chatroom client
+    $('#discord_connect_button').on('click', () => {
+      stopInventoryWatcher();
+      connect();
+    });
+    $('#discord_disconnect_button').on('click', () => {
+      stopInventoryWatcher();
+      disconnect();
+    });
 
     // -----------------------------------------------------------------------
     // Global tooltip for .dc-info elements
     // -----------------------------------------------------------------------
-    const $tip = $('<div id="dc-tooltip"></div>').appendTo("body");
+    const $tip = $('<div id="dc-tooltip"></div>').appendTo('body');
     let tipTarget = null;
 
     function showTip(el) {
-      const text = el.getAttribute("data-tooltip");
+      const text = el.getAttribute('data-tooltip');
       if (!text) return;
       tipTarget = el;
       $tip.text(text);
@@ -325,48 +282,40 @@ jQuery(async () => {
       let left = r.left + r.width / 2 - tipW / 2;
       left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
 
-      $tip.css({ left: left + "px", top: "", bottom: "" });
+      $tip.css({ left: left + 'px', top: '', bottom: '' });
 
-      $tip.addClass("dc-tooltip-visible");
+      $tip.addClass('dc-tooltip-visible');
       const tipH = $tip.outerHeight();
-      $tip.removeClass("dc-tooltip-visible");
+      $tip.removeClass('dc-tooltip-visible');
 
       if (r.top - tipH - 10 >= 8) {
-        $tip.css({ top: r.top - tipH - 10 + "px" });
+        $tip.css({ top: r.top - tipH - 10 + 'px' });
       } else {
-        $tip.css({ top: r.bottom + 8 + "px" });
+        $tip.css({ top: r.bottom + 8 + 'px' });
       }
 
-      $tip.addClass("dc-tooltip-visible");
+      $tip.addClass('dc-tooltip-visible');
     }
 
     function hideTip() {
       tipTarget = null;
-      $tip.removeClass("dc-tooltip-visible");
+      $tip.removeClass('dc-tooltip-visible');
     }
 
-    $(document).on("mouseenter", ".dc-info", function () {
-      showTip(this);
-    });
-    $(document).on("mouseleave", ".dc-info", hideTip);
-    $(document).on("focus", ".dc-info", function () {
-      showTip(this);
-    });
-    $(document).on("blur", ".dc-info", hideTip);
-    $(document).on("touchstart", ".dc-info", function (e) {
+    $(document).on('mouseenter', '.dc-info', function () { showTip(this); });
+    $(document).on('mouseleave', '.dc-info', hideTip);
+    $(document).on('focus', '.dc-info', function () { showTip(this); });
+    $(document).on('blur', '.dc-info', hideTip);
+    $(document).on('touchstart', '.dc-info', function (e) {
       e.preventDefault();
-      if (tipTarget === this) {
-        hideTip();
-      } else {
-        showTip(this);
-      }
+      if (tipTarget === this) { hideTip(); } else { showTip(this); }
     });
-    $(document).on("touchstart", function (e) {
-      if (tipTarget && !$(e.target).closest(".dc-info").length) hideTip();
+    $(document).on('touchstart', function (e) {
+      if (tipTarget && !$(e.target).closest('.dc-info').length) hideTip();
     });
 
-    if (settings.autoConnect) connect();
+    if (settings.chatroomAutoConnect && settings.chatroomUrl) connect();
   } catch (error) {
-    console.error("[CharacterBridge] Failed to load settings UI:", error);
+    console.error('[CharacterBridge] Failed to load settings UI:', error);
   }
 });

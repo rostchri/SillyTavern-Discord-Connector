@@ -58,6 +58,47 @@
         </label>
       </div>
 
+      <!-- Chatroom Direct Connection -->
+      <p class="dc-section-title">Chatroom (Direct)</p>
+      <div class="discord-connector_block flex-container flexFlowColumn gap5">
+        <label for="chatroom_url">
+          <span>Chatroom URL</span>
+          <span class="dc-info" role="button" tabindex="0" data-tooltip="WebSocket URL of the Chatroom backend, e.g. wss://chatroom.example.com/api/sillytavern/connect">&#9432;</span>
+        </label>
+        <input
+          type="text"
+          id="chatroom_url"
+          class="text_pole"
+          placeholder="wss://chatroom.example.com/api/sillytavern/connect"
+        />
+      </div>
+      <div class="discord-connector_block flex-container flexFlowColumn gap5">
+        <label for="chatroom_shared_secret">
+          <span>Shared Secret</span>
+          <span class="dc-info" role="button" tabindex="0" data-tooltip="Sent as first WebSocket frame for authentication. Never transmitted as a URL parameter.">&#9432;</span>
+        </label>
+        <input
+          type="password"
+          id="chatroom_shared_secret"
+          class="text_pole"
+          placeholder="Enter shared secret…"
+        />
+      </div>
+      <div class="discord-connector_block flex-container gap5">
+        <input id="chatroom_connect_button"    class="menu_button flex1" type="button" value="Connect" />
+        <input id="chatroom_disconnect_button" class="menu_button flex1" type="button" value="Disconnect" />
+        <input id="chatroom_test_button"       class="menu_button flex1" type="button" value="Test" />
+      </div>
+      <div id="chatroom_connection_status" class="dc-status">
+        Status: Not connected
+      </div>
+      <div class="discord-connector_block flex-container">
+        <label class="checkbox_label" for="chatroom_auto_connect">
+          <input type="checkbox" id="chatroom_auto_connect" />
+          <span>Auto-connect on page load</span>
+        </label>
+      </div>
+
       <!-- Mood & Expressions -->
       <p class="dc-section-title">Mood &amp; Expressions</p>
       <div class="discord-connector_block flex-container flexFlowColumn gap5">
