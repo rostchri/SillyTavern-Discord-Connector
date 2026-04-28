@@ -1,0 +1,473 @@
+/**
+ * CharacterBridge Extension - Chatroom WebSocket Client
+ * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * Direct WebSocket client to the Chatroom backend (Variante 3).
+ *
+ * Authentication strategy:
+ *   The Browser WebSocket API does not support custom HTTP headers during the
+ *   handshake (no Authorization header possible). Two alternatives exist:
+ *
+ *   Option A: Query-param  ?token=<secret>  — visible in server logs and
+ *             browser network inspector.
+ *   Option B: First-frame auth packet — secret travels inside the encrypted
+ *             WebSocket payload, never in the URL or HTTP headers.
+ *
+ *   This implementation uses Option B (first-frame auth packet):
+ *     {"type":"auth","secret":"<shared_secret>"}
+ *   The server must respond with {"type":"auth_ok"} or {"type":"auth_failed"}.
+ *   All subsequent frames are considered authenticated.
+ *
+ * TODO(elixir-counterpart): The Elixir LiveView / Phoenix Channel endpoint at
+ *   `wss://<host>/api/sillytavern/connect` MUST implement the same handshake:
+ *   1. Accept WS upgrade unconditionally (no secret in URL).
+ *   2. Wait for the first frame.
+ *   3. Parse {"type":"auth","secret":"..."}, compare with configured secret.
+ *   4. Reply {"type":"auth_ok"} on success, {"type":"auth_failed","reason":"..."}
+ *      on failure, then close the socket.
+ *   5. All frames before auth_ok MUST be silently discarded.
+ *   See: https://github.com/rostchri/chatroom — Phase Elixir, Sprint auth-ws
+ *
+ * Reconnect strategy: exponential backoff 5 s → 10 s → 20 s → 40 s → 60 s cap.
+ * Heartbeat: ping every 30 s; if no pong arrives within 90 s → force reconnect.
+ */
+
+import { getSettings, updateStatus } from './settings.js';
+import { chatroomConnectionState } from './state.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 90_000;
+const BACKOFF_INITIAL_MS = 5_000;
+const BACKOFF_MAX_MS = 60_000;
+
+// ---------------------------------------------------------------------------
+// Module-private state
+// ---------------------------------------------------------------------------
+
+/** @type {WebSocket|null} */
+let _ws = null;
+
+let _authenticated = false;
+let _shouldReconnect = false;
+let _reconnectTimer = null;
+let _reconnectDelay = BACKOFF_INITIAL_MS;
+let _heartbeatTimer = null;
+let _pongDeadlineTimer = null;
+let _lastPongAt = 0;
+
+/** @type {Array<function(object):void>} */
+const _messageHandlers = [];
+
+// ---------------------------------------------------------------------------
+// Message handler registry
+// ---------------------------------------------------------------------------
+
+/**
+ * Registers a handler function that will be called for every authenticated
+ * inbound packet. Multiple handlers can be registered; all receive the packet.
+ *
+ * @param {function(object):void} fn
+ */
+export function onMessage(fn) {
+  _messageHandlers.push(fn);
+}
+
+function _dispatch(packet) {
+  for (const fn of _messageHandlers) {
+    try {
+      fn(packet);
+    } catch (err) {
+      console.warn('[CharacterBridge/chatroom] message handler threw:', err);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function _resetPongDeadline() {
+  if (_pongDeadlineTimer) clearTimeout(_pongDeadlineTimer);
+  _lastPongAt = Date.now();
+  _pongDeadlineTimer = setTimeout(() => {
+    const age = Date.now() - _lastPongAt;
+    if (age >= HEARTBEAT_TIMEOUT_MS) {
+      console.warn('[CharacterBridge/chatroom] Pong timeout — reconnecting');
+      _forceReconnect();
+    }
+  }, HEARTBEAT_TIMEOUT_MS);
+}
+
+function _stopTimers() {
+  if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
+  if (_pongDeadlineTimer) { clearTimeout(_pongDeadlineTimer); _pongDeadlineTimer = null; }
+}
+
+function _forceReconnect() {
+  if (_ws) {
+    _ws.onclose = null; // prevent double-reconnect
+    _ws.onerror = null;
+    try { _ws.close(); } catch (_) {}
+    _ws = null;
+  }
+  _stopTimers();
+  _authenticated = false;
+  _updateState(false, null);
+  _scheduleReconnect();
+}
+
+function _scheduleReconnect() {
+  if (_reconnectTimer) return;
+  if (!_shouldReconnect) return;
+  _updateState(false, null);
+  updateStatus('Reconnecting…', 'orange');
+  _reconnectTimer = setTimeout(() => {
+    _reconnectTimer = null;
+    _reconnectDelay = Math.min(_reconnectDelay * 2, BACKOFF_MAX_MS);
+    connect();
+  }, _reconnectDelay);
+}
+
+function _updateState(isConnected, lastError) {
+  chatroomConnectionState.isConnected = isConnected;
+  chatroomConnectionState.lastError = lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Connect / Disconnect
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a WebSocket connection to the Chatroom backend.
+ * Safe to call when already connected (no-op in that case).
+ */
+export function connect() {
+  if (
+    _ws &&
+    (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)
+  ) return;
+
+  const settings = getSettings();
+  const url = settings.chatroomUrl;
+  if (!url) {
+    updateStatus('Chatroom URL not set', 'red');
+    _updateState(false, 'URL not configured');
+    return;
+  }
+
+  _shouldReconnect = true;
+  _authenticated = false;
+  updateStatus('Connecting…', 'orange');
+
+  try {
+    _ws = new WebSocket(url);
+  } catch (err) {
+    console.error('[CharacterBridge/chatroom] WebSocket constructor failed:', err);
+    updateStatus('Connect error', 'red');
+    _updateState(false, err.message);
+    _scheduleReconnect();
+    return;
+  }
+
+  _ws.onopen = () => {
+    console.log('[CharacterBridge/chatroom] Socket open — sending auth frame');
+    updateStatus('Authenticating…', 'orange');
+    // Reset backoff on successful TCP connect
+    _reconnectDelay = BACKOFF_INITIAL_MS;
+    _resetPongDeadline();
+
+    const secret = settings.chatroomSharedSecret;
+    if (secret) {
+      _rawSend({ type: 'auth', secret });
+    } else {
+      // No secret configured — treat as pre-authenticated
+      _authenticated = true;
+      _onAuthenticated();
+    }
+  };
+
+  _ws.onmessage = (event) => {
+    let packet;
+    try {
+      packet = JSON.parse(event.data);
+    } catch (err) {
+      console.warn('[CharacterBridge/chatroom] Invalid JSON frame ignored:', err);
+      return;
+    }
+
+    // Pong resets the heartbeat deadline regardless of auth state
+    if (packet.type === 'pong' || packet.type === 'ping') {
+      _resetPongDeadline();
+      // Respond to server-initiated pings
+      if (packet.type === 'ping') _rawSend({ type: 'pong' });
+      return;
+    }
+
+    if (!_authenticated) {
+      if (packet.type === 'auth_ok') {
+        _authenticated = true;
+        _onAuthenticated();
+        return;
+      }
+      if (packet.type === 'auth_failed') {
+        console.error('[CharacterBridge/chatroom] Auth failed:', packet.reason ?? 'unknown');
+        updateStatus('Auth failed', 'red');
+        _updateState(false, `Auth failed: ${packet.reason ?? 'unknown'}`);
+        _shouldReconnect = false; // wrong secret — don't spam
+        if (_ws) _ws.close();
+        return;
+      }
+      console.warn('[CharacterBridge/chatroom] Pre-auth frame ignored:', packet.type);
+      return;
+    }
+
+    _dispatch(packet);
+  };
+
+  _ws.onclose = (event) => {
+    console.log('[CharacterBridge/chatroom] Socket closed', event.code, event.reason);
+    _ws = null;
+    _authenticated = false;
+    _stopTimers();
+    _updateState(false, null);
+    updateStatus('Disconnected', 'red');
+    _scheduleReconnect();
+  };
+
+  _ws.onerror = (err) => {
+    console.error('[CharacterBridge/chatroom] WebSocket error:', err);
+    updateStatus('Error', 'red');
+    _updateState(false, 'WebSocket error');
+  };
+}
+
+/**
+ * Cleanly disconnects and suppresses automatic reconnection.
+ */
+export function disconnect() {
+  _shouldReconnect = false;
+  _stopTimers();
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  if (_ws) {
+    _ws.close();
+    _ws = null;
+  }
+  _authenticated = false;
+  _updateState(false, null);
+  updateStatus('Disconnected', 'red');
+}
+
+// ---------------------------------------------------------------------------
+// Post-authentication setup
+// ---------------------------------------------------------------------------
+
+function _onAuthenticated() {
+  console.log('[CharacterBridge/chatroom] Authenticated — ready');
+  _updateState(true, null);
+  updateStatus('Connected', 'green');
+  _resetPongDeadline();
+
+  // Periodic ping
+  if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+  _heartbeatTimer = setInterval(() => {
+    send({ type: 'ping' });
+  }, HEARTBEAT_INTERVAL_MS);
+
+  // Notify application layer (index.js) that the connection is ready.
+  // Using a synthetic packet avoids exposing internal lifecycle hooks.
+  _dispatch({ type: '_connected' });
+}
+
+// ---------------------------------------------------------------------------
+// Send helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends a JSON frame unconditionally (bypasses auth check).
+ * Only for auth and pong frames.
+ *
+ * @param {object} payload
+ */
+function _rawSend(payload) {
+  if (_ws?.readyState !== WebSocket.OPEN) return;
+  try {
+    _ws.send(JSON.stringify(payload));
+  } catch (err) {
+    console.warn('[CharacterBridge/chatroom] _rawSend failed:', err);
+  }
+}
+
+/**
+ * Sends a JSON packet to the Chatroom backend.
+ * Silently dropped if not connected and authenticated.
+ *
+ * @param {object} payload
+ */
+export function send(payload) {
+  if (!_authenticated || _ws?.readyState !== WebSocket.OPEN) return;
+  try {
+    _ws.send(JSON.stringify(payload));
+  } catch (err) {
+    console.warn('[CharacterBridge/chatroom] send failed:', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Typed packet senders (Spec: Issue #866 Spec-Update 7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends a non-streaming AI reply to Chatroom.
+ *
+ * @param {string} text
+ * @param {string|null} charName
+ */
+export function sendUserMessageReply(text, charName) {
+  send({ type: 'ai_reply', text, char_name: charName ?? null });
+}
+
+/**
+ * Sends one streaming token chunk.
+ *
+ * @param {string} streamId
+ * @param {string} delta  Cumulative text so far
+ * @param {string|null} charName
+ */
+export function sendStreamChunk(streamId, delta, charName) {
+  send({ type: 'stream_chunk', stream_id: streamId, delta, char_name: charName ?? null });
+}
+
+/**
+ * Signals the end of a streaming turn.
+ * finalText MUST be preserved as null when the AI produced no text — do NOT
+ * silently coerce to "".
+ *
+ * @param {string} streamId
+ * @param {string|null} finalText
+ * @param {string|null} charName
+ */
+export function sendStreamEnd(streamId, finalText, charName) {
+  // Intentionally NOT coercing null to "". The spec requires null to be
+  // forwarded so the Chatroom backend can distinguish "no text" from "empty".
+  send({ type: 'stream_end', stream_id: streamId, final_text: finalText, char_name: charName ?? null });
+}
+
+/**
+ * Sends an expression/emotion update with optional image.
+ *
+ * @param {string|null} charName
+ * @param {string} emotion
+ * @param {string|null} imageBase64
+ */
+export function sendExpression(charName, emotion, imageBase64) {
+  send({ type: 'expression_update', char_name: charName ?? null, emotion, image_b64: imageBase64 ?? null });
+}
+
+/**
+ * Sends a character avatar update.
+ *
+ * @param {string|null} charName
+ * @param {string|null} imageBase64
+ */
+export function sendAvatar(charName, imageBase64) {
+  send({ type: 'avatar_update', char_name: charName ?? null, image_b64: imageBase64 ?? null });
+}
+
+/**
+ * Sends the full character inventory on connect or when explicitly requested.
+ * Spec field names: ai_character / personas (not bots/characters).
+ *
+ * @param {{bots: Array, personas: Array, metadata: object}} inventory
+ */
+export function sendInventory(inventory) {
+  const { bots, personas, metadata } = inventory;
+  send({
+    type: 'character_inventory',
+    ai_character: bots ?? [],
+    personas: personas ?? [],
+    metadata: metadata ?? {},
+  });
+}
+
+/**
+ * Sends an incremental inventory update when the roster changes.
+ *
+ * @param {{bots: Array, personas: Array, metadata: object}} inventory
+ */
+export function sendInventoryUpdate(inventory) {
+  const { bots, personas, metadata } = inventory;
+  send({
+    type: 'inventory_update',
+    ai_character: bots ?? [],
+    personas: personas ?? [],
+    metadata: metadata ?? {},
+  });
+}
+
+/**
+ * Sends a typing indicator.
+ *
+ * @param {string|null} charName
+ * @param {boolean} active
+ */
+export function sendTypingAction(charName, active) {
+  send({ type: 'typing_action', char_name: charName ?? null, active: Boolean(active) });
+}
+
+// ---------------------------------------------------------------------------
+// Connection state accessor
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the socket is open and authenticated.
+ *
+ * @returns {boolean}
+ */
+export function isConnected() {
+  return _authenticated && _ws?.readyState === WebSocket.OPEN;
+}
+
+// ---------------------------------------------------------------------------
+// Test/internal accessors (not part of public API, used by tests only)
+// ---------------------------------------------------------------------------
+
+export function _getSocket() { return _ws; }
+export function _isAuthenticated() { return _authenticated; }
+export function _getReconnectDelay() { return _reconnectDelay; }
+
+/**
+ * Resets all module-private state to its initial values.
+ * ONLY call from tests — never from production code.
+ */
+export function _resetForTest() {
+  if (_ws) { try { _ws.close(); } catch (_) {} _ws = null; }
+  _stopTimers();
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  _authenticated = false;
+  _shouldReconnect = false;
+  _reconnectDelay = BACKOFF_INITIAL_MS;
+  _lastPongAt = 0;
+  chatroomConnectionState.isConnected = false;
+  chatroomConnectionState.lastError = null;
+  // Clear message handlers registered in tests to avoid cross-test pollution
+  _messageHandlers.length = 0;
+}

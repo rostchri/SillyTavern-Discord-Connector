@@ -24,3 +24,14 @@
 export const sharedState = {
   lastActiveChatId: null,
 };
+
+/**
+ * Chatroom WebSocket connection state.
+ * Mutated by chatroom-client.js; readable by settings.js and index.js.
+ */
+export const chatroomConnectionState = {
+  /** True when the socket is open and the auth handshake has succeeded. */
+  isConnected: false,
+  /** Last error string, or null when healthy. */
+  lastError: null,
+};

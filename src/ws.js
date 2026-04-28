@@ -1,5 +1,5 @@
 /**
- * CharacterBridge Extension - WebSocket State
+ * CharacterBridge Extension - WebSocket Adapter Shim
  * Based on SillyTavern-Discord-Connector by senjinthedragon (AGPL-3.0)
  *
  * This program is free software: you can redistribute it and/or modify
@@ -17,27 +17,39 @@
  */
 
 /**
- * WebSocket state and safe-send helper.
- * All other modules import safeSend/getWs from here rather than
- * holding a reference to the socket themselves.
+ * Backward-compatibility shim.
+ *
+ * Previously this module owned the raw WebSocket state (setWs/getWs/safeSend).
+ * Variante 3 moves all connection logic into chatroom-client.js; this file
+ * re-exports a safeSend wrapper that delegates to chatroom-client.send() so
+ * that all existing callers (commands.js, expression-relay.js, image-relay.js,
+ * inventory.js, recap.js) continue to work without modification.
+ *
+ * The raw setWs/getWs API is kept for index.js compatibility but is a no-op:
+ * the socket is now managed exclusively by chatroom-client.js.
  */
 
-let _ws = null;
+import { send } from './chatroom-client.js';
 
-export function setWs(socket) {
-  _ws = socket;
-}
+/**
+ * No-op — socket lifecycle is managed by chatroom-client.js.
+ * @deprecated
+ */
+export function setWs(_socket) {}
 
-export function getWs() {
-  return _ws;
-}
+/**
+ * No-op — direct socket access is no longer needed by callers.
+ * @deprecated
+ * @returns {null}
+ */
+export function getWs() { return null; }
 
-/** Send a JSON payload only when the socket is open. */
+/**
+ * Sends a JSON payload to the Chatroom backend.
+ * Delegates to chatroom-client.send(); silently dropped when not connected.
+ *
+ * @param {object} payload
+ */
 export function safeSend(payload) {
-  if (_ws?.readyState !== WebSocket.OPEN) return;
-  try {
-    _ws.send(JSON.stringify(payload));
-  } catch (err) {
-    console.warn("[CharacterBridge] safeSend failed:", err);
-  }
+  send(payload);
 }
