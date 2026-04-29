@@ -239,42 +239,13 @@ jQuery(async () => {
       }
     });
 
-    // ---- Legacy bridge section (kept for backward compat UI wiring) --------
-    $('#discord_bridge_url').val(settings.bridgeUrl);
-    $('#discord_shared_secret').val(settings.sharedSecret);
-    $('#discord_auto_connect').prop('checked', settings.autoConnect);
+    // Expression mode (verbleibt aus Mood & Expressions Sektion)
     $('#discord_expression_mode').val(settings.expressionMode);
-
-    $('#discord_bridge_url').on('input', () => {
-      getSettings().bridgeUrl = $('#discord_bridge_url').val();
-      SillyTavern.getContext().saveSettingsDebounced();
-    });
-
-    $('#discord_shared_secret').on('input', () => {
-      getSettings().sharedSecret = $('#discord_shared_secret').val();
-      SillyTavern.getContext().saveSettingsDebounced();
-    });
-
-    $('#discord_auto_connect').on('change', () => {
-      getSettings().autoConnect = $('#discord_auto_connect').prop('checked');
-      SillyTavern.getContext().saveSettingsDebounced();
-    });
-
     $('#discord_expression_mode').on('change', () => {
       getSettings().expressionMode = $('#discord_expression_mode').val();
       resetExpressionSignature();
       SillyTavern.getContext().saveSettingsDebounced();
       scheduleExpressionUpdate(sharedState.lastActiveChatId);
-    });
-
-    // The old Connect/Disconnect buttons now also drive the chatroom client
-    $('#discord_connect_button').on('click', () => {
-      stopInventoryWatcher();
-      connect();
-    });
-    $('#discord_disconnect_button').on('click', () => {
-      stopInventoryWatcher();
-      disconnect();
     });
 
     // -----------------------------------------------------------------------

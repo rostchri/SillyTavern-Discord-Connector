@@ -8,9 +8,6 @@
 export const MODULE_NAME = "characterbridge-extension";
 
 export const DEFAULT_SETTINGS = {
-  bridgeUrl: "ws://localhost:2333",
-  sharedSecret: "",
-  autoConnect: true,
   expressionMode: "status",
   /** Direct Chatroom backend URL (Variante 3 — no middleware). */
   chatroomUrl: "",
@@ -44,7 +41,8 @@ export function getSettings() {
 }
 
 export function updateStatus(message, color) {
-  const el = document.getElementById("discord_connection_status");
+  // Status-Label fuer den Chatroom-Connect (das Legacy-Feld discord_connection_status wurde entfernt)
+  const el = document.getElementById("chatroom_connection_status");
   if (el) {
     el.textContent = `Status: ${message}`;
     el.style.color = color;

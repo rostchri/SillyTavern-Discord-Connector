@@ -24,40 +24,6 @@
     </div>
     <div class="inline-drawer-content">
 
-      <!-- Connection -->
-      <p class="dc-section-title">Connection</p>
-      <div class="discord-connector_block flex-container flexFlowColumn gap5">
-        <label for="discord_bridge_url">CharacterBridge URL</label>
-        <input
-          type="text"
-          id="discord_bridge_url"
-          class="text_pole"
-          placeholder="ws://localhost:2333"
-        />
-      </div>
-      <div class="discord-connector_block flex-container flexFlowColumn gap5">
-        <label for="discord_shared_secret">Shared Secret</label>
-        <input
-          type="password"
-          id="discord_shared_secret"
-          class="text_pole"
-          placeholder="Enter shared secret..."
-        />
-      </div>
-      <div class="discord-connector_block flex-container gap5">
-        <input id="discord_connect_button"    class="menu_button flex1" type="button" value="Connect" />
-        <input id="discord_disconnect_button" class="menu_button flex1" type="button" value="Disconnect" />
-      </div>
-      <div id="discord_connection_status" class="dc-status">
-        Status: Click Connect to connect
-      </div>
-      <div class="discord-connector_block flex-container">
-        <label class="checkbox_label" for="discord_auto_connect">
-          <input type="checkbox" id="discord_auto_connect" />
-          <span>Auto-connect on page load</span>
-        </label>
-      </div>
-
       <!-- Chatroom Direct Connection -->
       <p class="dc-section-title">Chatroom (Direct)</p>
       <div class="discord-connector_block flex-container flexFlowColumn gap5">
