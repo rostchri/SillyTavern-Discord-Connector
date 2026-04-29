@@ -29,7 +29,7 @@ globalThis.WebSocket = WsClient;
 // getContext() call, because settings.js caches MODULE_NAME into this object
 // and reads it back by reference on subsequent calls.
 const _extensionSettings = {
-  'SillyTavern-Discord-Connector': {
+  'characterbridge-extension': {
     chatroomUrl: '',
     chatroomSharedSecret: '',
     chatroomAutoConnect: false,

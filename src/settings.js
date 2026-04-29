@@ -5,7 +5,7 @@
  * Extension settings - name, defaults, accessor, and status indicator.
  */
 
-export const MODULE_NAME = "SillyTavern-Discord-Connector";
+export const MODULE_NAME = "characterbridge-extension";
 
 export const DEFAULT_SETTINGS = {
   bridgeUrl: "ws://localhost:2333",
