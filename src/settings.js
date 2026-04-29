@@ -15,8 +15,6 @@ export const DEFAULT_SETTINGS = {
   chatroomSharedSecret: "",
   /** Roleplay-Room-ID die diese ST-Instanz bedient. Pflicht. */
   chatroomRoomId: "",
-  /** Optionaler Bridge-Identifier fuer Logging server-seitig. */
-  chatroomBridgeId: "",
   /** Whether to auto-connect to Chatroom on page load. */
   chatroomAutoConnect: true,
 };

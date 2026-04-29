@@ -197,11 +197,8 @@ export function connect() {
 
     const secret = settings.chatroomSharedSecret;
     const roomId = settings.chatroomRoomId;
-    const bridgeId = settings.chatroomBridgeId;
     if (secret && roomId) {
-      const authFrame = { type: 'auth', secret, room_id: roomId };
-      if (bridgeId) authFrame.bridge_id = bridgeId;
-      _rawSend(authFrame);
+      _rawSend({ type: 'auth', secret, room_id: roomId });
     } else if (!secret && !roomId) {
       // No secret + no room_id configured — treat as pre-authenticated (test mode)
       _authenticated = true;

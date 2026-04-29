@@ -174,7 +174,6 @@ jQuery(async () => {
     $('#chatroom_url').val(settings.chatroomUrl ?? '');
     $('#chatroom_shared_secret').val(settings.chatroomSharedSecret ?? '');
     $('#chatroom_room_id').val(settings.chatroomRoomId ?? '');
-    $('#chatroom_bridge_id').val(settings.chatroomBridgeId ?? '');
     $('#chatroom_auto_connect').prop('checked', settings.chatroomAutoConnect ?? true);
 
     $('#chatroom_url').on('input', () => {
@@ -189,11 +188,6 @@ jQuery(async () => {
 
     $('#chatroom_room_id').on('input', () => {
       getSettings().chatroomRoomId = $('#chatroom_room_id').val();
-      SillyTavern.getContext().saveSettingsDebounced();
-    });
-
-    $('#chatroom_bridge_id').on('input', () => {
-      getSettings().chatroomBridgeId = $('#chatroom_bridge_id').val();
       SillyTavern.getContext().saveSettingsDebounced();
     });
 
