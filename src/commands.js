@@ -41,17 +41,16 @@ import {
 
 import { executeSlashCommandsWithOptions } from "../../../../../scripts/slash-commands.js";
 
-import { safeSend } from "./ws.js";
-import { sharedState } from "./state.js";
-import { sanitizeSlashArg } from "./utils.js";
-import {
-  sendLastMessageImages,
-} from "./image-relay.js";
+import { safeSend } from './ws.js';
+import { sharedState } from './state.js';
+import { sanitizeSlashArg } from './utils.js';
+import { sendLastMessageImages } from './image-relay.js';
 import {
   resetExpressionSignature,
   scheduleExpressionUpdate,
   clearExpressionCache,
-} from "./expression-relay.js";
+} from './expression-relay.js';
+import { splitThinking, stripThinkingPrefix } from './thinking-utils.js';
 
 // String fallback covers older ST versions that don't export this event type.
 const GROUP_WRAPPER_FINISHED =
@@ -123,17 +122,27 @@ export async function handleUserMessage(data) {
 
   let currentStreamId = null;
   let currentCharacterName = null;
+  // Tracks the last visible text emitted so we can derive true deltas.
+  // Reset to '' on every GENERATION_STARTED.
+  let lastSent = '';
 
   const streamCallback = (cumulativeText) => {
     if (!currentStreamId) return;
+    // Strip leading <think>...</think> so live chunks never contain thinking content.
+    const visibleText = stripThinkingPrefix(cumulativeText);
+    const newPart = visibleText.startsWith(lastSent)
+      ? visibleText.slice(lastSent.length)
+      : visibleText;  // fallback: unexpected change, emit as-is
+    if (!newPart) return;  // skip empty deltas
+    lastSent = visibleText;
     messageState.isStreaming = true;
     messageState.streamedAny = true;
     safeSend({
-      type: "stream_chunk",
+      type: 'stream_chunk',
       chatId: messageState.chatId,
       streamId: currentStreamId,
       charName: currentCharacterName || getActiveCharName(),
-      delta: cumulativeText,
+      delta: newPart,
     });
   };
   eventSource.on(event_types.STREAM_TOKEN_RECEIVED, streamCallback);
@@ -146,6 +155,7 @@ export async function handleUserMessage(data) {
       // Read chat[i].mes rather than relying on streaming pendingText.
       // ST applies sentence-completion trimming to mes after generation ends.
       let finalText = null;
+      let thinkingText = null;
       try {
         const { chat } = SillyTavern.getContext();
         if (chat?.length) {
@@ -158,7 +168,9 @@ export async function handleUserMessage(data) {
               msg.name === currentCharacterName
             ) {
               if (msg.mes?.trim()) {
-                finalText = msg.mes.trim();
+                const split = splitThinking(msg.mes.trim());
+                thinkingText = split.thinking;
+                finalText = split.visible;
                 break;
               }
             }
@@ -166,17 +178,18 @@ export async function handleUserMessage(data) {
         }
       } catch (err) {
         console.warn(
-          "[CharacterBridge] Could not read final text from chat array:",
+          '[CharacterBridge] Could not read final text from chat array:',
           err,
         );
       }
 
       safeSend({
-        type: "stream_end",
+        type: 'stream_end',
         chatId: messageState.chatId,
         streamId: currentStreamId,
         charName,
         finalText,
+        thinking: thinkingText,
       });
     }
     messageState.isStreaming = false;
@@ -194,12 +207,15 @@ export async function handleUserMessage(data) {
     for (let i = chat.length - 1; i >= 0; i--) {
       const msg = chat[i];
       if (msg.is_user) break;
-      if (msg.mes?.trim())
+      if (msg.mes?.trim()) {
+        const split = splitThinking(msg.mes.trim());
         aiMessages.unshift({
-          name: msg.name || "",
-          text: msg.mes.trim(),
+          name: msg.name || '',
+          text: split.visible,
+          thinking: split.thinking,
           charName: msg.name || getActiveCharName(),
         });
+      }
     }
 
     if (aiMessages.length > 0) {
@@ -228,6 +244,7 @@ export async function handleUserMessage(data) {
     currentStreamId = `${messageState.chatId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const ctx = SillyTavern.getContext();
     currentCharacterName = ctx.groupId ? ctx.name2 || null : null;
+    lastSent = '';  // reset delta baseline for each new stream
   };
   eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
 
