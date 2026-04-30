@@ -37,8 +37,8 @@
     "test-release": "npm run verify-release",
     "start": "cd server && node server.js",
     "release-checklist": "node scripts/release-checklist.js",
-    "test": "node --test src/chatroom-client.test.js",
-    "test:src": "node --test src/chatroom-client.test.js"
+    "test": "node --test $(find src -name '*.test.js' | tr '\\n' ' ')",
+    "test:src": "node --test $(find src -name '*.test.js' | tr '\\n' ' ')"
   },
   "author": "Senjin the Dragon <https://github.com/senjinthedragon>",
   "license": "MIT",
