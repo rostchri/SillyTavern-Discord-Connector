@@ -353,9 +353,10 @@ export function send(payload) {
  *
  * @param {string} text
  * @param {string|null} charName
+ * @param {string|null} [chatId]
  */
-export function sendUserMessageReply(text, charName) {
-  send({ type: 'ai_reply', text, char_name: charName ?? null });
+export function sendUserMessageReply(text, charName, chatId) {
+  send({ type: 'ai_reply', text, char_name: charName ?? null, chat_id: chatId ?? null });
 }
 
 /**
@@ -441,9 +442,75 @@ export function sendInventoryUpdate(inventory) {
  *
  * @param {string|null} charName
  * @param {boolean} active
+ * @param {string|null} [chatId]
  */
-export function sendTypingAction(charName, active) {
-  send({ type: 'typing_action', char_name: charName ?? null, active: Boolean(active) });
+export function sendTypingAction(charName, active, chatId) {
+  send({ type: 'typing_action', char_name: charName ?? null, active: Boolean(active), chat_id: chatId ?? null });
+}
+
+/**
+ * Sends one streaming token chunk including chat context.
+ *
+ * @param {string} streamId
+ * @param {string} delta
+ * @param {string|null} charName
+ * @param {string|null} chatId
+ */
+export function sendStreamChunkWithContext(streamId, delta, charName, chatId) {
+  send({
+    type: 'stream_chunk',
+    stream_id: streamId,
+    delta,
+    char_name: charName ?? null,
+    chat_id: chatId ?? null,
+  });
+}
+
+/**
+ * Signals the end of a streaming turn, including optional thinking content.
+ * finalText MUST be preserved as null when the AI produced no text.
+ *
+ * @param {string} streamId
+ * @param {string|null} finalText
+ * @param {string|null} charName
+ * @param {string|null} chatId
+ * @param {string|null} [thinking]
+ */
+export function sendStreamEndWithContext(streamId, finalText, charName, chatId, thinking) {
+  send({
+    type: 'stream_end',
+    stream_id: streamId,
+    final_text: finalText,
+    char_name: charName ?? null,
+    chat_id: chatId ?? null,
+    thinking: thinking ?? null,
+  });
+}
+
+/**
+ * Sends a multi-message AI reply (e.g. after a group turn).
+ *
+ * @param {Array<{name: string, text: string, thinking: string|null, charName: string|null}>} messages
+ * @param {string|null} charName  Active character at the time of reply.
+ * @param {string|null} chatId
+ */
+export function sendAiReply(messages, charName, chatId) {
+  send({
+    type: 'ai_reply',
+    messages,
+    char_name: charName ?? null,
+    chat_id: chatId ?? null,
+  });
+}
+
+/**
+ * Sends an error message back to the Chatroom backend.
+ *
+ * @param {string} text
+ * @param {string|null} chatId
+ */
+export function sendErrorMessage(text, chatId) {
+  send({ type: 'error_message', text, chat_id: chatId ?? null });
 }
 
 // ---------------------------------------------------------------------------

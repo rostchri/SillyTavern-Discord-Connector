@@ -41,8 +41,15 @@ import {
 
 import { executeSlashCommandsWithOptions } from "../../../../../scripts/slash-commands.js";
 
-import { safeSend } from './ws.js';
 import { sharedState } from './state.js';
+import {
+  sendTypingAction,
+  sendStreamChunkWithContext,
+  sendStreamEndWithContext,
+  sendAiReply,
+  sendUserMessageReply,
+  sendErrorMessage,
+} from './chatroom-client.js';
 import { sanitizeSlashArg } from './utils.js';
 import { sendLastMessageImages } from './image-relay.js';
 import {
@@ -111,12 +118,7 @@ export async function handleUserMessage(data) {
     streamedAny: false,
   };
 
-  safeSend({
-    type: "typing_action",
-    chatId: messageState.chatId,
-    charName: getActiveCharName(),
-    active: true,
-  });
+  sendTypingAction(getActiveCharName(), true, messageState.chatId);
 
   await sendMessageAsUser(data.text);
 
@@ -137,17 +139,16 @@ export async function handleUserMessage(data) {
     lastSent = visibleText;
     messageState.isStreaming = true;
     messageState.streamedAny = true;
-    safeSend({
-      type: 'stream_chunk',
-      chatId: messageState.chatId,
-      streamId: currentStreamId,
-      charName: currentCharacterName || getActiveCharName(),
-      delta: newPart,
-    });
+    sendStreamChunkWithContext(
+      currentStreamId,
+      newPart,
+      currentCharacterName || getActiveCharName(),
+      messageState.chatId,
+    );
   };
   eventSource.on(event_types.STREAM_TOKEN_RECEIVED, streamCallback);
 
-  const sendStreamEnd = () => {
+  const flushStreamEnd = () => {
     if (messageState.isStreaming && currentStreamId) {
       const isGroup = !!SillyTavern.getContext().groupId;
       const charName = currentCharacterName || getActiveCharName();
@@ -183,14 +184,13 @@ export async function handleUserMessage(data) {
         );
       }
 
-      safeSend({
-        type: 'stream_end',
-        chatId: messageState.chatId,
-        streamId: currentStreamId,
-        charName,
+      sendStreamEndWithContext(
+        currentStreamId,
         finalText,
-        thinking: thinkingText,
-      });
+        charName,
+        messageState.chatId,
+        thinkingText,
+      );
     }
     messageState.isStreaming = false;
     currentStreamId = null;
@@ -219,18 +219,9 @@ export async function handleUserMessage(data) {
     }
 
     if (aiMessages.length > 0) {
-      safeSend({
-        type: "ai_reply",
-        chatId: messageState.chatId,
-        messages: aiMessages,
-        charName: getActiveCharName(),
-      });
+      sendAiReply(aiMessages, getActiveCharName(), messageState.chatId);
     } else if (!messageState.streamedAny) {
-      safeSend({
-        type: "error_message",
-        chatId: messageState.chatId,
-        text: "No response generated.",
-      });
+      sendErrorMessage('No response generated.', messageState.chatId);
     }
 
     // Forward images from the last AI message (post-generation art, etc.)
@@ -268,7 +259,7 @@ export async function handleUserMessage(data) {
   // Fires once per character turn. Closes their stream.
   // In solo chat also triggers the final ai_reply.
   const onGenerationEnded = () => {
-    sendStreamEnd();
+    flushStreamEnd();
     if (!SillyTavern.getContext().groupId) {
       removeAllListeners();
       collectAndSendReplies();
@@ -289,7 +280,7 @@ export async function handleUserMessage(data) {
   const onGenerationStopped = () => {
     eventSource.removeListener(event_types.GENERATION_STOPPED, onGenerationStopped);
     removeAllListeners();
-    sendStreamEnd();
+    flushStreamEnd();
   };
   eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
 
@@ -300,13 +291,9 @@ export async function handleUserMessage(data) {
   } catch (error) {
     console.error("[CharacterBridge] Generation error:", error);
     await deleteLastMessage();
-    safeSend({
-      type: "error_message",
-      chatId: messageState.chatId,
-      text: `Generation failed: ${error.message || "Unknown"}`,
-    });
+    sendErrorMessage(`Generation failed: ${error.message || 'Unknown'}`, messageState.chatId);
     removeAllListeners();
-    sendStreamEnd();
+    flushStreamEnd();
   }
 }
 
@@ -325,12 +312,7 @@ export async function handleUserMessage(data) {
  */
 export async function handleExecuteCommand(data) {
   sharedState.lastActiveChatId = data.chatId || sharedState.lastActiveChatId;
-  safeSend({
-    type: "typing_action",
-    chatId: data.chatId,
-    charName: getActiveCharName(),
-    active: true,
-  });
+  sendTypingAction(getActiveCharName(), true, data.chatId);
 
   let replyText = null;
   const context = SillyTavern.getContext();
@@ -462,11 +444,6 @@ export async function handleExecuteCommand(data) {
   }
 
   if (replyText) {
-    safeSend({
-      type: "ai_reply",
-      chatId: data.chatId,
-      text: replyText,
-      charName: getActiveCharName(),
-    });
+    sendUserMessageReply(replyText, getActiveCharName(), data.chatId);
   }
 }
