@@ -40,6 +40,22 @@ export function sanitizeSlashArg(value) {
     .slice(0, 200);
 }
 
+/**
+ * Sanitizes a chat filename argument before passing it to openCharacterChat.
+ * In addition to the standard slash-command sanitization, this strips path
+ * traversal sequences (`..`, `/`, `\`) so a remote caller cannot navigate
+ * outside SillyTavern's chat directory.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function sanitizeChatArg(value) {
+  return sanitizeSlashArg(value)
+    .replace(/\.\./g, "")   // strip directory-traversal sequences
+    .replace(/[/\\]/g, "")  // strip path separators
+    .trim();
+}
+
 // For free-text fields like /note where newlines are valid content.
 // Only strips the pipe character (ST slash command injection vector).
 export function sanitizeNoteArg(value) {

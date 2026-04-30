@@ -20,27 +20,29 @@ import { stripThinkingPrefix } from '../thinking-utils.js';
 
 /**
  * Simulates the delta-derivation logic from streamCallback.
+ * Uses length-based delta tracking (O(1)) matching the production implementation.
  * Returns an array of emitted deltas (empty deltas are suppressed).
  *
  * @param {string[]} snapshots - Sequence of cumulative texts.
- * @param {string} [initialLastSent=''] - Simulates lastSent at stream start.
- * @returns {{ deltas: string[], finalLastSent: string }}
+ * @param {number} [initialLastSentLength=0] - Simulates lastSentLength at stream start.
+ * @returns {{ deltas: string[], finalLastSentLength: number }}
  */
-function simulateStream(snapshots, initialLastSent = '') {
-  let lastSent = initialLastSent;
+function simulateStream(snapshots, initialLastSentLength = 0) {
+  let lastSentLength = initialLastSentLength;
   const deltas = [];
 
   for (const cumulativeText of snapshots) {
     const visibleText = stripThinkingPrefix(cumulativeText);
-    const newPart = visibleText.startsWith(lastSent)
-      ? visibleText.slice(lastSent.length)
-      : visibleText;
+    // Length-based delta derivation — O(1) vs O(n) startsWith
+    const newPart = visibleText.length >= lastSentLength
+      ? visibleText.slice(lastSentLength)
+      : visibleText;  // regression fallback: emit full visible
     if (!newPart) continue;  // skip empty deltas
-    lastSent = visibleText;
+    lastSentLength = visibleText.length;
     deltas.push(newPart);
   }
 
-  return { deltas, finalLastSent: lastSent };
+  return { deltas, finalLastSentLength: lastSentLength };
 }
 
 // ---------------------------------------------------------------------------
@@ -64,17 +66,19 @@ describe('streaming delta computation', () => {
     assert.deepEqual(deltas, ['Hello', '!']);
   });
 
-  it('resets correctly when lastSent is reset to empty string for new stream', () => {
-    // Simulate end of stream 1: lastSent = 'Old text'
-    // Then GENERATION_STARTED resets lastSent to ''
+  it('resets correctly when lastSentLength is reset to 0 for new stream', () => {
+    // Simulate end of stream 1: lastSentLength was non-zero
+    // Then GENERATION_STARTED resets lastSentLength to 0
     // New stream starts fresh
-    const { deltas } = simulateStream(['New', 'New stream'], '');
+    const { deltas } = simulateStream(['New', 'New stream'], 0);
     assert.deepEqual(deltas, ['New', ' stream']);
   });
 
-  it('uses fallback (emit full visible) when snapshot does not start with lastSent', () => {
-    // Unexpected change — snapshot no longer starts with lastSent
-    const { deltas } = simulateStream(['Hello world'], 'Unexpected prefix');
+  it('uses fallback (emit full visible) when visible text length regresses', () => {
+    // Regression: visible text is shorter than what was already sent — emit as-is.
+    // initialLastSentLength=17 simulates having already sent 17 chars,
+    // then the new snapshot has only 11 visible chars (regression).
+    const { deltas } = simulateStream(['Hello world'], 17);
     assert.deepEqual(deltas, ['Hello world']);
   });
 

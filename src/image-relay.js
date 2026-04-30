@@ -221,12 +221,12 @@ export function sendCollectedImages(chatId, images, caption, charName) {
   if (!images?.length) return;
   safeSend({
     type: "send_images",
-    chatId,
+    chat_id: chatId,
     images: images.map((img) => ({
       data_b64: img.data || img.url,
-      mimeType: img.mimeType || "image/png",
+      mime_type: img.mimeType || "image/png",
     })),
-    charName: charName || null,
+    char_name: charName || null,
     caption: caption || null,
   });
 }

@@ -140,9 +140,11 @@ function _scheduleReconnect() {
   if (!_shouldReconnect) return;
   _updateState(false, null);
   updateStatus('Reconnecting…', 'orange');
+  // Double the delay BEFORE waiting so that rapid consecutive failures
+  // produce a monotonically increasing backoff sequence.
+  _reconnectDelay = Math.min(_reconnectDelay * 2, BACKOFF_MAX_MS);
   _reconnectTimer = setTimeout(() => {
     _reconnectTimer = null;
-    _reconnectDelay = Math.min(_reconnectDelay * 2, BACKOFF_MAX_MS);
     connect();
   }, _reconnectDelay);
 }
@@ -199,10 +201,6 @@ export function connect() {
     const roomId = settings.chatroomRoomId;
     if (secret && roomId) {
       _rawSend({ type: 'auth', secret, room_id: roomId });
-    } else if (!secret && !roomId) {
-      // No secret + no room_id configured — treat as pre-authenticated (test mode)
-      _authenticated = true;
-      _onAuthenticated();
     } else {
       console.error('[CharacterBridge/chatroom] Both chatroomSharedSecret and chatroomRoomId must be set.');
       updateStatus('Config incomplete', 'red');
@@ -394,6 +392,25 @@ export function sendStreamEnd(streamId, finalText, charName) {
  */
 export function sendExpression(charName, emotion, imageBase64) {
   send({ type: 'expression_update', char_name: charName ?? null, emotion, image_b64: imageBase64 ?? null });
+}
+
+/**
+ * Sends an expression/emotion update including chat context.
+ * Uses strictly snake_case field names per protocol spec.
+ *
+ * @param {string|null} charName
+ * @param {string} emotion
+ * @param {string|null} imageBase64
+ * @param {string|null} [chatId]
+ */
+export function sendExpressionWithContext(charName, emotion, imageBase64, chatId) {
+  send({
+    type: 'expression_update',
+    char_name: charName ?? null,
+    emotion,
+    image_b64: imageBase64 ?? null,
+    chat_id: chatId ?? null,
+  });
 }
 
 /**

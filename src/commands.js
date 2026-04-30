@@ -50,7 +50,7 @@ import {
   sendUserMessageReply,
   sendErrorMessage,
 } from './chatroom-client.js';
-import { sanitizeSlashArg } from './utils.js';
+import { sanitizeSlashArg, sanitizeChatArg } from './utils.js';
 import { sendLastMessageImages } from './image-relay.js';
 import {
   resetExpressionSignature,
@@ -124,19 +124,22 @@ export async function handleUserMessage(data) {
 
   let currentStreamId = null;
   let currentCharacterName = null;
-  // Tracks the last visible text emitted so we can derive true deltas.
-  // Reset to '' on every GENERATION_STARTED.
-  let lastSent = '';
+  // Tracks the number of visible characters already sent so we can derive
+  // true per-chunk deltas without an O(n) startsWith comparison.
+  // Reset to 0 on every GENERATION_STARTED.
+  let lastSentLength = 0;
 
   const streamCallback = (cumulativeText) => {
     if (!currentStreamId) return;
     // Strip leading <think>...</think> so live chunks never contain thinking content.
     const visibleText = stripThinkingPrefix(cumulativeText);
-    const newPart = visibleText.startsWith(lastSent)
-      ? visibleText.slice(lastSent.length)
-      : visibleText;  // fallback: unexpected change, emit as-is
+    // Use length-based delta derivation (O(1)) instead of startsWith (O(n)).
+    // If the visible text regressed (e.g. stream reset), emit the full text.
+    const newPart = visibleText.length >= lastSentLength
+      ? visibleText.slice(lastSentLength)
+      : visibleText;  // fallback: unexpected regression, emit as-is
     if (!newPart) return;  // skip empty deltas
-    lastSent = visibleText;
+    lastSentLength = visibleText.length;
     messageState.isStreaming = true;
     messageState.streamedAny = true;
     sendStreamChunkWithContext(
@@ -235,7 +238,7 @@ export async function handleUserMessage(data) {
     currentStreamId = `${messageState.chatId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const ctx = SillyTavern.getContext();
     currentCharacterName = ctx.groupId ? ctx.name2 || null : null;
-    lastSent = '';  // reset delta baseline for each new stream
+    lastSentLength = 0;  // reset delta baseline for each new stream
   };
   eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
 
@@ -405,7 +408,11 @@ export async function handleExecuteCommand(data) {
           replyText = "Usage: switchchat <name>";
           break;
         }
-        const targetChatFile = data.args.join(" ");
+        const targetChatFile = sanitizeChatArg(data.args.join(" "));
+        if (!targetChatFile) {
+          replyText = "Invalid chat name.";
+          break;
+        }
         try {
           await openCharacterChat(targetChatFile);
           replyText = `Switched to chat "${targetChatFile}".`;

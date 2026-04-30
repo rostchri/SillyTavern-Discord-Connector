@@ -24,7 +24,7 @@
  * expression name (emotion) and optionally the expression image as base64.
  */
 
-import { safeSend } from "./ws.js";
+import { sendExpressionWithContext } from "./chatroom-client.js";
 import { getSettings } from "./settings.js";
 import { sharedState } from "./state.js";
 import { resolveImagePayload } from "./image-relay.js";
@@ -156,13 +156,7 @@ export async function sendExpressionUpdate(chatIdHint = null) {
 
   const chatId = chatIdHint || sharedState.lastActiveChatId || null;
 
-  safeSend({
-    type: "expression_update",
-    charName: ownerName || null,
-    emotion: expression,
-    image_b64: image,
-    chatId,
-  });
+  sendExpressionWithContext(ownerName || null, expression, image, chatId);
 }
 
 export function scheduleExpressionUpdate(chatIdHint = null) {
@@ -177,7 +171,13 @@ export function scheduleExpressionUpdate(chatIdHint = null) {
 export function setupExpressionObserver() {
   if (expressionObserver) return;
 
-  const target = document.getElementById("expression-wrapper") || document.body;
+  // Prefer narrow selectors; never fall back to document.body (subtree:true on
+  // body observes the entire DOM and causes excessive MutationObserver callbacks).
+  // If no suitable element is found yet, skip observation entirely — the next
+  // polling tick will retry via scheduleExpressionUpdate.
+  const target =
+    document.getElementById("expression-wrapper") ||
+    document.getElementById("expression-image");
   if (!target) return;
 
   expressionObserver = new MutationObserver(() => {
